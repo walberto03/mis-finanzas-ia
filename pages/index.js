@@ -34,9 +34,14 @@ const firebaseConfig = {
 const appId = process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia';
 
 // --- CORRECCIÓN DEL ERROR DE BUILD ---
-// Usamos getApps() para verificar si ya existe una instancia.
-// Esto evita el error "reading length of undefined".
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+// Verificamos de forma segura si ya existe una instancia de Firebase
+// para evitar el error "reading length of undefined".
+let app;
+if (getApps && getApps().length > 0) {
+  app = getApp();
+} else {
+  app = initializeApp(firebaseConfig);
+}
 
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -49,12 +54,14 @@ const formatCompactCurrency = (value) => {
 };
 
 // --- COMPONENTE DE RED ---
-const NetworkExplorer = ({ messages, onSelectTag }) => {
+const NetworkExplorer = ({ messages = [], onSelectTag }) => {
   const [centerTag, setCenterTag] = useState(null);
   
   const { nodes, links, maxValue } = useMemo(() => {
     const nodeMap = {};
     let maxVal = 0;
+
+    if (!messages) return { nodes: [], links: [], maxValue: 0 };
 
     if (!centerTag) {
       messages.forEach(msg => {
@@ -69,7 +76,8 @@ const NetworkExplorer = ({ messages, onSelectTag }) => {
         .sort((a, b) => b.value - a.value)
         .slice(0, 7);
 
-      maxVal = Math.max(...sortedNodes.map(n => n.value));
+      // Guard para evitar errores si no hay nodos
+      maxVal = sortedNodes.length > 0 ? Math.max(...sortedNodes.map(n => n.value)) : 0;
 
       sortedNodes.forEach((n, i) => {
         const angle = (i / sortedNodes.length) * 2 * Math.PI - (Math.PI / 2);
@@ -168,7 +176,7 @@ const NetworkExplorer = ({ messages, onSelectTag }) => {
         ))}
 
         {nodes.map((node) => {
-          const sizeRatio = node.value / (maxValue || 1);
+          const sizeRatio = maxValue > 0 ? node.value / maxValue : 0;
           const radius = node.type === 'center' ? 14 : 6 + (sizeRatio * 8);
           const fillId = node.type === 'center' ? 'url(#grad-center)' : node.type === 'main' ? 'url(#grad-main)' : 'url(#grad-sat)';
 
