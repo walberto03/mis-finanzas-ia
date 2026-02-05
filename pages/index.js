@@ -55,44 +55,66 @@ const formatCompactCurrency = (value) => {
   return `$${value}`;
 };
 
-// --- COMPONENTE DE RED (MEJORADO) ---
+// --- COMPONENTE DE RED (REPARADO Y MEJORADO) ---
 const NetworkExplorer = ({ messages = [], onSelectTag }) => {
   const [centerTag, setCenterTag] = useState(null);
   
   const { nodes, links, maxValue } = useMemo(() => {
     const nodeMap = {};
+    const tagCoOccurrence = {}; // Para detectar padres/hijos
     let maxVal = 0;
 
     if (!messages || messages.length === 0) return { nodes: [], links: [], maxValue: 0 };
 
     const validMessages = messages.filter(m => m.amount && Array.isArray(m.tags));
 
-    if (!centerTag) {
-      // VISTA GLOBAL
-      validMessages.forEach(msg => {
-        if (msg.type === 'income') return;
-        msg.tags.forEach(tag => {
-          if (!nodeMap[tag]) nodeMap[tag] = { id: tag, value: 0, type: 'main' };
-          nodeMap[tag].value += msg.amount;
+    // 1. Calcular valores y co-ocurrencias
+    validMessages.forEach(msg => {
+      if (msg.type === 'income') return;
+      
+      msg.tags.forEach(tag => {
+        if (!nodeMap[tag]) nodeMap[tag] = { id: tag, value: 0, count: 0 };
+        nodeMap[tag].value += msg.amount;
+        nodeMap[tag].count += 1;
+
+        // Registrar pares para saber quién es hijo de quién
+        msg.tags.forEach(otherTag => {
+          if (tag === otherTag) return;
+          const key = `${tag}|${otherTag}`; // Key simple
+          if (!tagCoOccurrence[key]) tagCoOccurrence[key] = 0;
+          tagCoOccurrence[key] += 1;
         });
       });
+    });
+
+    if (!centerTag) {
+      // VISTA GLOBAL: Filtrar "Hijos" para limpiar el mapa
+      const topNodes = Object.values(nodeMap).sort((a, b) => b.value - a.value);
       
-      const sortedNodes = Object.values(nodeMap)
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 7);
+      // Filtro heurístico: Si un tag aparece >70% de las veces junto a otro tag más grande,
+      // lo consideramos "subcategoría" y lo ocultamos de la vista principal.
+      const filteredNodes = topNodes.filter(node => {
+        const parentCandidate = topNodes.find(parent => 
+          parent.id !== node.id && 
+          parent.value > node.value &&
+          (tagCoOccurrence[`${node.id}|${parent.id}`] || 0) / node.count > 0.6
+        );
+        return !parentCandidate; // Solo pasa si NO tiene un padre dominante
+      }).slice(0, 7); // Mostrar Top 7 categorías principales
 
-      maxVal = sortedNodes.length > 0 ? Math.max(...sortedNodes.map(n => n.value)) : 0;
+      maxVal = filteredNodes.length > 0 ? Math.max(...filteredNodes.map(n => n.value)) : 0;
 
-      sortedNodes.forEach((n, i) => {
-        const angle = (i / sortedNodes.length) * 2 * Math.PI - (Math.PI / 2);
+      filteredNodes.forEach((n, i) => {
+        const angle = (i / filteredNodes.length) * 2 * Math.PI - (Math.PI / 2);
         n.x = 50 + 30 * Math.cos(angle);
         n.y = 50 + 30 * Math.sin(angle);
+        n.type = 'main';
       });
 
-      return { nodes: sortedNodes, links: [], maxValue: maxVal };
+      return { nodes: filteredNodes, links: [], maxValue: maxVal };
 
     } else {
-      // VISTA DETALLADA
+      // VISTA DETALLADA: Mostrar Centro + Hijos/Relacionados
       let centerValue = 0;
       const relatedMap = {};
 
@@ -111,7 +133,7 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
       const satelliteNodes = Object.keys(relatedMap)
         .map(key => ({ id: key, value: relatedMap[key], type: 'satellite' }))
         .sort((a, b) => b.value - a.value)
-        .slice(0, 8);
+        .slice(0, 8); // Top 8 subcategorías
 
       maxVal = Math.max(centerValue, ...satelliteNodes.map(n => n.value));
 
@@ -130,13 +152,26 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
     }
   }, [messages, centerTag]);
 
+  // Manejador de clics robusto
+  const handleNodeClick = (nodeId, e) => {
+    e.preventDefault();
+    e.stopPropagation(); // Evitar burbujeo
+    if (centerTag === nodeId) {
+      setCenterTag(null);
+      onSelectTag(null);
+    } else {
+      setCenterTag(nodeId);
+      onSelectTag(nodeId);
+    }
+  };
+
   return (
     <div className="relative w-full h-[450px] bg-slate-900 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center border border-slate-800">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-900/40 via-slate-900 to-black"></div>
       
       {centerTag && (
         <button 
-          onClick={() => { setCenterTag(null); onSelectTag(null); }}
+          onClick={(e) => { e.stopPropagation(); setCenterTag(null); onSelectTag(null); }}
           className="absolute top-4 left-4 bg-white/10 hover:bg-white/20 text-indigo-100 px-4 py-1.5 rounded-full text-xs backdrop-blur-md z-20 flex items-center gap-2 transition-all border border-white/10 cursor-pointer"
         >
           <X size={14} /> Volver
@@ -180,30 +215,20 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
           return (
             <g 
               key={node.id} 
-              // ANIMACIÓN CSS: Usamos transform en estilo para movimiento suave
-              style={{ 
-                transition: 'all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                transformBox: 'view-box', // Importante para SVG
-                transform: `translate(${node.x - 50}px, ${node.y - 50}px)`, // Truco para centrar el movimiento relativo
-                transformOrigin: '50px 50px' 
-              }}
+              // FIX: Usamos transform estándar de SVG para asegurar interactividad
+              transform={`translate(${node.x}, ${node.y})`}
+              style={{ transition: 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
+              className="cursor-pointer"
+              onClick={(e) => handleNodeClick(node.id, e)}
             >
-              {/* Grupo interno movido al centro para usar coordenadas relativas */}
-              <g transform="translate(50, 50)">
-                <circle 
-                  r={radius} 
-                  fill={fillId} 
-                  stroke="white" strokeWidth="0.5" strokeOpacity="0.5"
-                  className="cursor-pointer hover:opacity-80"
-                  onClick={(e) => { 
-                    e.stopPropagation();
-                    const newTag = node.id === centerTag ? null : node.id;
-                    setCenterTag(newTag); 
-                    onSelectTag(newTag);
-                  }}
-                />
+              {/* Círculo invisible para ampliar área de clic */}
+              <circle r={radius + 5} fill="transparent" />
+              
+              {/* Elementos visuales con animación de escala al pasar mouse */}
+              <g className="transition-transform duration-200 hover:scale-110">
+                <circle r={radius} fill="black" opacity="0.3" filter="url(#glow)" transform="translate(0, 2)" />
+                <circle r={radius} fill={fillId} stroke="white" strokeWidth="0.5" strokeOpacity="0.5" />
                 
-                {/* Texto NO intercepta clics */}
                 <text 
                   y={-radius * 0.2} textAnchor="middle" fill="white" 
                   fontSize={Math.max(2.5, radius * 0.35)} fontWeight="bold" 
@@ -226,7 +251,7 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
 
       {!centerTag && (
         <div className="absolute bottom-6 text-indigo-200 text-xs bg-indigo-900/50 px-4 py-1 rounded-full backdrop-blur-sm border border-indigo-500/30 pointer-events-none">
-          Toca una esfera para explorar
+          Toca una esfera para ver subcategorías
         </div>
       )}
     </div>
