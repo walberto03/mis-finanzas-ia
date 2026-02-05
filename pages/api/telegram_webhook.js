@@ -19,7 +19,6 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).send('Solo POST');
   
   const message = req.body.message || req.body.edited_message;
-  // Si Telegram manda una actualización sin mensaje de texto (ej: un pin), ignoramos.
   if (!message) return res.status(200).send('OK');
 
   const chatId = message.chat.id;
@@ -52,7 +51,7 @@ export default async function handler(req, res) {
       return res.status(200).send('Unauthorized');
     }
 
-    // 3. Procesar con IA (Llama 3.3)
+    // 3. Procesar con IA
     await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
       method: 'POST',
       body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
@@ -61,19 +60,35 @@ export default async function handler(req, res) {
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     
+    // --- PROMPT BLINDADO PARA JERARQUÍA ESTÁNDAR ---
     const prompt = `
       Eres un contador experto. Analiza el mensaje: "${message.text}"
       
-      Reglas OBLIGATORIAS de clasificación ('type'):
-      - 'income': SOLO si el usuario RECIBE dinero. Ej: "Me pagaron", "Nómina", "Ingresó dinero".
-      - 'expense': Si el usuario GASTA dinero. IMPORTANTE: "Pago de quincena a [Nombre]" es un GASTO (Salida). "Pagué la tarjeta" es un GASTO.
-      - 'debt_payment': Específico para abonos a deudas propias.
+      OBJETIVO: Clasificar gasto/ingreso y generar etiquetas jerárquicas estrictas.
 
-      Reglas de extracción:
-      - amount: Numero entero sin puntos.
-      - tags: Categorías cortas y jerárquicas. Ej: "Pago quincena Omaira" -> ["Hogar", "Empleados", "Omaira"].
+      REGLAS DE CLASIFICACIÓN ('type'):
+      - 'income': SOLO entrada de dinero.
+      - 'expense': Salida de dinero (incluye pagos a empleados/servicios).
+      - 'debt_payment': Abonos a deudas propias.
+
+      REGLAS DE ETIQUETAS ('tags') - FORMATO: [CATEGORÍA MACRO, SUBCATEGORÍA, DETALLE]:
+      1. La PRIMERA etiqueta DEBE ser una de estas MACRO CATEGORÍAS:
+         - "Hogar" (Servicios, Arriendo, Empleados/Omaira/Tania, Mantenimiento)
+         - "Alimentación" (Mercado, Restaurantes)
+         - "Transporte" (Gasolina, Mantenimiento, Seguros, Gas)
+         - "Salud" (Citas, Medicamentos)
+         - "Educación"
+         - "Ocio"
+         - "Mascotas/Finca"
       
-      Salida JSON: { "amount": number, "type": string, "tags": string[] }
+      2. PROHIBIDO usar como 1ra etiqueta: "Pago", "Quincena", "Mensualidad", "Compra". Esas palabras NO son categorías.
+      
+      3. EJEMPLOS CORRECTOS:
+         - "Pago quincena Omaira" -> ["Hogar", "Empleados", "Omaira"]
+         - "Gas carro sofi" -> ["Transporte", "Gas", "Sofi"]
+         - "Mercado en Makro" -> ["Alimentación", "Mercado", "Makro"]
+      
+      Salida JSON: { "amount": number, "type": "income" | "expense" | "debt_payment", "tags": string[] }
     `;
 
     const completion = await groq.chat.completions.create({
@@ -85,12 +100,10 @@ export default async function handler(req, res) {
 
     const analysis = JSON.parse(completion.choices[0].message.content);
 
-    // 4. Lógica de Guardado / Edición
+    // 4. Guardar / Editar
     const APP_COLLECTION = process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia';
 
-    // A. SI ES UNA EDICIÓN
     if (req.body.edited_message) {
-       console.log(`Buscando mensaje original ID: ${message.message_id}`);
        const snapshot = await db.collection('artifacts')
             .doc(APP_COLLECTION)
             .collection('public')
@@ -100,7 +113,6 @@ export default async function handler(req, res) {
             .get();
 
        if (!snapshot.empty) {
-         // Encontramos el original -> Actualizamos
          await snapshot.docs[0].ref.update({
             originalText: message.text,
             amount: analysis.amount,
@@ -109,18 +121,15 @@ export default async function handler(req, res) {
             updatedAt: new Date()
          });
          
-         // MENSAJE DE CONFIRMACIÓN DE EDICIÓN
-         const typeLabel = analysis.type === 'income' ? 'INGRESO' : 'GASTO';
-         await sendTelegramReply(token, chatId, `✏️ Mensaje editado correctamente.\nNueva clasificación: ${typeLabel} - $${analysis.amount.toLocaleString()}`);
+         const typeLabel = analysis.type === 'income' ? 'INGRESO 🤑' : 'GASTO 💸';
+         await sendTelegramReply(token, chatId, `✏️ ACTUALIZADO CORRECTAMENTE\n\n${typeLabel}: $${analysis.amount.toLocaleString()}\n📂 ${analysis.tags.join(' > ')}`);
          return res.status(200).json({ success: true });
        } else {
-         // NO encontramos el original -> MENSAJE DE ERROR EXPLÍCITO
-         await sendTelegramReply(token, chatId, `⚠️ Error: No encontré el registro original para editarlo.\n\n🗑️ Por favor elimina el registro incorrecto desde la App Web y envía el mensaje de nuevo.`);
+         await sendTelegramReply(token, chatId, `⚠️ No encontré el mensaje original para editarlo. Por favor bórralo en la Web y envíalo de nuevo.`);
          return res.status(200).send('Edit target not found');
        }
     }
 
-    // B. SI ES UN MENSAJE NUEVO
     await db.collection('artifacts')
             .doc(APP_COLLECTION)
             .collection('public')
@@ -137,19 +146,18 @@ export default async function handler(req, res) {
               source: 'telegram_bot'
             });
 
-    // MENSAJE DE CONFIRMACIÓN DE NUEVO REGISTRO (CON TIPO EXPLÍCITO)
     let typeLabel = "GASTO 💸";
     if (analysis.type === 'income') typeLabel = "INGRESO 🤑";
-    if (analysis.type === 'debt_payment') typeLabel = "PAGO DEUDA 💳";
+    if (analysis.type === 'debt_payment') typeLabel = "ABONO DEUDA 💳";
 
-    await sendTelegramReply(token, chatId, `✅ ${typeLabel} registrado:\n💲 $${analysis.amount.toLocaleString()}\n🏷️ ${analysis.tags.join(', ')}`);
+    await sendTelegramReply(token, chatId, `✅ ${typeLabel} REGISTRADO\n\n💰 $${analysis.amount.toLocaleString()}\n📂 ${analysis.tags.join(' > ')}`);
     
     return res.status(200).json({ success: true });
 
   } catch (error) {
     console.error("Error handler:", error);
     if (token && chatId) {
-      await sendTelegramReply(token, chatId, `🔥 Error Crítico: ${error.message}`);
+      await sendTelegramReply(token, chatId, `🔥 Error: ${error.message}`);
     }
     return res.status(500).send(error.message);
   }
