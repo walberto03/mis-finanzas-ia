@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getFirestore, collection, onSnapshot, 
@@ -8,12 +8,13 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
-  PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip
 } from 'recharts';
 import { 
   PieChart as PieIcon, MessageSquare, 
   Tag, TrendingUp, TrendingDown, Filter, X, Wallet, 
-  Zap, CloudLightning, Calendar as CalendarIcon, Network, Trash2
+  Zap, CloudLightning, Calendar as CalendarIcon, Network, Trash2,
+  ChevronRight, ChevronDown, Layers
 } from 'lucide-react';
 
 // --- CREDENCIALES REALES ---
@@ -40,7 +41,7 @@ if (getApps().length > 0) {
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Helper seguro para fechas
+// Helper para fechas
 const formatDateSafe = (createdAt) => {
   if (!createdAt || !createdAt.seconds) return '';
   try {
@@ -52,208 +53,130 @@ const formatCompactCurrency = (value) => {
   if (!value || isNaN(value)) return '$0';
   if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
   if (value >= 1000) return `$${(value / 1000).toFixed(0)}k`;
-  return `$${value}`;
+  return `$${(value / 1000).toFixed(0)}k`; // Formato corto tipo 148k
 };
 
-// --- COMPONENTE DE RED (REPARADO Y MEJORADO) ---
-const NetworkExplorer = ({ messages = [], onSelectTag }) => {
-  const [centerTag, setCenterTag] = useState(null);
-  
-  const { nodes, links, maxValue } = useMemo(() => {
-    const nodeMap = {};
-    const tagCoOccurrence = {}; // Para detectar padres/hijos
-    let maxVal = 0;
+// --- LÓGICA DE JERARQUÍA ---
+// Esta función organiza los datos en Padre > Hijo automáticamente
+const processHierarchy = (messages) => {
+  const tagCounts = {};
+  const tagValues = {};
+  const hierarchy = {};
 
-    if (!messages || messages.length === 0) return { nodes: [], links: [], maxValue: 0 };
-
-    const validMessages = messages.filter(m => m.amount && Array.isArray(m.tags));
-
-    // 1. Calcular valores y co-ocurrencias
-    validMessages.forEach(msg => {
-      if (msg.type === 'income') return;
-      
-      msg.tags.forEach(tag => {
-        if (!nodeMap[tag]) nodeMap[tag] = { id: tag, value: 0, count: 0 };
-        nodeMap[tag].value += msg.amount;
-        nodeMap[tag].count += 1;
-
-        // Registrar pares para saber quién es hijo de quién
-        msg.tags.forEach(otherTag => {
-          if (tag === otherTag) return;
-          const key = `${tag}|${otherTag}`; // Key simple
-          if (!tagCoOccurrence[key]) tagCoOccurrence[key] = 0;
-          tagCoOccurrence[key] += 1;
-        });
-      });
+  // 1. Contar frecuencias globales para determinar quién es "Padre"
+  messages.forEach(msg => {
+    if (msg.type === 'income' || !msg.tags) return;
+    msg.tags.forEach(t => {
+      tagCounts[t] = (tagCounts[t] || 0) + 1;
+      tagValues[t] = (tagValues[t] || 0) + msg.amount;
     });
+  });
 
-    if (!centerTag) {
-      // VISTA GLOBAL: Filtrar "Hijos" para limpiar el mapa
-      const topNodes = Object.values(nodeMap).sort((a, b) => b.value - a.value);
-      
-      // Filtro heurístico: Si un tag aparece >70% de las veces junto a otro tag más grande,
-      // lo consideramos "subcategoría" y lo ocultamos de la vista principal.
-      const filteredNodes = topNodes.filter(node => {
-        const parentCandidate = topNodes.find(parent => 
-          parent.id !== node.id && 
-          parent.value > node.value &&
-          (tagCoOccurrence[`${node.id}|${parent.id}`] || 0) / node.count > 0.6
-        );
-        return !parentCandidate; // Solo pasa si NO tiene un padre dominante
-      }).slice(0, 7); // Mostrar Top 7 categorías principales
+  // 2. Agrupar transacciones
+  messages.forEach(msg => {
+    if (msg.type === 'income' || !msg.tags || msg.tags.length === 0) return;
 
-      maxVal = filteredNodes.length > 0 ? Math.max(...filteredNodes.map(n => n.value)) : 0;
-
-      filteredNodes.forEach((n, i) => {
-        const angle = (i / filteredNodes.length) * 2 * Math.PI - (Math.PI / 2);
-        n.x = 50 + 30 * Math.cos(angle);
-        n.y = 50 + 30 * Math.sin(angle);
-        n.type = 'main';
-      });
-
-      return { nodes: filteredNodes, links: [], maxValue: maxVal };
-
-    } else {
-      // VISTA DETALLADA: Mostrar Centro + Hijos/Relacionados
-      let centerValue = 0;
-      const relatedMap = {};
-
-      validMessages.forEach(msg => {
-        if (!msg.tags.includes(centerTag)) return;
-        centerValue += msg.amount;
-        msg.tags.forEach(t => {
-          if (t === centerTag) return; 
-          if (!relatedMap[t]) relatedMap[t] = 0;
-          relatedMap[t] += msg.amount;
-        });
-      });
-
-      const centerNode = { id: centerTag, value: centerValue, type: 'center', x: 50, y: 50 };
-      
-      const satelliteNodes = Object.keys(relatedMap)
-        .map(key => ({ id: key, value: relatedMap[key], type: 'satellite' }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 8); // Top 8 subcategorías
-
-      maxVal = Math.max(centerValue, ...satelliteNodes.map(n => n.value));
-
-      satelliteNodes.forEach((node, i) => {
-        const angle = (i / satelliteNodes.length) * 2 * Math.PI;
-        node.x = 50 + 32 * Math.cos(angle);
-        node.y = 50 + 32 * Math.sin(angle);
-      });
-
-      const currentLinks = satelliteNodes.map(target => ({
-        source: centerNode,
-        target: target
-      }));
-
-      return { nodes: [centerNode, ...satelliteNodes], links: currentLinks, maxValue: maxVal };
+    // El tag "Padre" es el más frecuente globalmente en este mensaje
+    // Ej: En ["Gas", "Transporte"], Transporte es más común -> Padre
+    const sortedTags = [...msg.tags].sort((a, b) => (tagCounts[b] || 0) - (tagCounts[a] || 0));
+    const parentTag = sortedTags[0];
+    
+    if (!hierarchy[parentTag]) {
+      hierarchy[parentTag] = { 
+        name: parentTag, 
+        value: 0, 
+        count: 0,
+        children: {} 
+      };
     }
-  }, [messages, centerTag]);
 
-  // Manejador de clics robusto
-  const handleNodeClick = (nodeId, e) => {
-    e.preventDefault();
-    e.stopPropagation(); // Evitar burbujeo
-    if (centerTag === nodeId) {
-      setCenterTag(null);
-      onSelectTag(null);
-    } else {
-      setCenterTag(nodeId);
-      onSelectTag(nodeId);
-    }
-  };
+    hierarchy[parentTag].value += msg.amount;
+    hierarchy[parentTag].count += 1;
 
-  return (
-    <div className="relative w-full h-[450px] bg-slate-900 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center border border-slate-800">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-900/40 via-slate-900 to-black"></div>
-      
-      {centerTag && (
+    // Los demás tags son hijos
+    sortedTags.slice(1).forEach(childTag => {
+      if (!hierarchy[parentTag].children[childTag]) {
+        hierarchy[parentTag].children[childTag] = { name: childTag, value: 0 };
+      }
+      hierarchy[parentTag].children[childTag].value += msg.amount;
+    });
+  });
+
+  // Convertir a array y ordenar por valor
+  return Object.values(hierarchy)
+    .map(parent => ({
+      ...parent,
+      children: Object.values(parent.children).sort((a, b) => b.value - a.value)
+    }))
+    .sort((a, b) => b.value - a.value);
+};
+
+// --- COMPONENTE BUBBLE EXPLORER (HTML PURO - SIN SVG) ---
+const BubbleExplorer = ({ data, onSelectCategory, selectedCategory }) => {
+  if (!data || data.length === 0) return <div className="text-center text-slate-400 p-10">Sin datos</div>;
+
+  // Si hay una categoría seleccionada, mostramos detalle
+  if (selectedCategory) {
+    const parent = data.find(d => d.name === selectedCategory);
+    if (!parent) return null;
+
+    return (
+      <div className="h-[400px] bg-slate-900 rounded-3xl p-6 relative overflow-hidden flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
+        <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/50 to-slate-900"></div>
+        
         <button 
-          onClick={(e) => { e.stopPropagation(); setCenterTag(null); onSelectTag(null); }}
-          className="absolute top-4 left-4 bg-white/10 hover:bg-white/20 text-indigo-100 px-4 py-1.5 rounded-full text-xs backdrop-blur-md z-20 flex items-center gap-2 transition-all border border-white/10 cursor-pointer"
+          onClick={() => onSelectCategory(null)}
+          className="absolute top-4 left-4 z-20 bg-white/10 text-white px-3 py-1 rounded-full text-xs hover:bg-white/20 flex items-center gap-1"
         >
           <X size={14} /> Volver
         </button>
-      )}
 
-      <svg viewBox="0 0 100 100" className="w-full h-full p-2 select-none">
-        <defs>
-          <radialGradient id="grad-main" cx="30%" cy="30%" r="70%">
-            <stop offset="0%" stopColor="#818cf8" />
-            <stop offset="100%" stopColor="#3730a3" />
-          </radialGradient>
-          <radialGradient id="grad-center" cx="30%" cy="30%" r="70%">
-            <stop offset="0%" stopColor="#f472b6" />
-            <stop offset="100%" stopColor="#be185d" />
-          </radialGradient>
-          <radialGradient id="grad-sat" cx="30%" cy="30%" r="70%">
-            <stop offset="0%" stopColor="#38bdf8" />
-            <stop offset="100%" stopColor="#0369a1" />
-          </radialGradient>
-          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="1" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
-        </defs>
-
-        {links.map((link, i) => (
-          <line 
-            key={`link-${i}`}
-            x1={link.source.x} y1={link.source.y}
-            x2={link.target.x} y2={link.target.y}
-            stroke="white" strokeWidth="0.2" strokeOpacity="0.2" strokeDasharray="2"
-          />
-        ))}
-
-        {nodes.map((node) => {
-          const sizeRatio = maxValue > 0 ? node.value / maxValue : 0;
-          const radius = node.type === 'center' ? 14 : 7 + (sizeRatio * 8);
-          const fillId = node.type === 'center' ? 'url(#grad-center)' : node.type === 'main' ? 'url(#grad-main)' : 'url(#grad-sat)';
-
-          return (
-            <g 
-              key={node.id} 
-              // FIX: Usamos transform estándar de SVG para asegurar interactividad
-              transform={`translate(${node.x}, ${node.y})`}
-              style={{ transition: 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
-              className="cursor-pointer"
-              onClick={(e) => handleNodeClick(node.id, e)}
-            >
-              {/* Círculo invisible para ampliar área de clic */}
-              <circle r={radius + 5} fill="transparent" />
-              
-              {/* Elementos visuales con animación de escala al pasar mouse */}
-              <g className="transition-transform duration-200 hover:scale-110">
-                <circle r={radius} fill="black" opacity="0.3" filter="url(#glow)" transform="translate(0, 2)" />
-                <circle r={radius} fill={fillId} stroke="white" strokeWidth="0.5" strokeOpacity="0.5" />
-                
-                <text 
-                  y={-radius * 0.2} textAnchor="middle" fill="white" 
-                  fontSize={Math.max(2.5, radius * 0.35)} fontWeight="bold" 
-                  className="pointer-events-none drop-shadow-md"
-                >
-                  {node.id.length > 9 ? node.id.substring(0,8)+'..' : node.id}
-                </text>
-                <text 
-                  y={radius * 0.5} textAnchor="middle" fill="rgba(255,255,255,0.9)" 
-                  fontSize={Math.max(2, radius * 0.3)} fontWeight="500" 
-                  className="pointer-events-none"
-                >
-                  {formatCompactCurrency(node.value)}
-                </text>
-              </g>
-            </g>
-          );
-        })}
-      </svg>
-
-      {!centerTag && (
-        <div className="absolute bottom-6 text-indigo-200 text-xs bg-indigo-900/50 px-4 py-1 rounded-full backdrop-blur-sm border border-indigo-500/30 pointer-events-none">
-          Toca una esfera para ver subcategorías
+        {/* Burbuja Central (Padre) */}
+        <div className="z-10 w-32 h-32 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex flex-col items-center justify-center shadow-lg shadow-indigo-500/30 mb-8 border-4 border-slate-800">
+          <span className="text-white font-bold text-lg">{parent.name}</span>
+          <span className="text-indigo-100 text-sm">{formatCompactCurrency(parent.value)}</span>
         </div>
-      )}
+
+        {/* Burbujas Hijos */}
+        <div className="z-10 flex flex-wrap justify-center gap-3">
+          {parent.children.length > 0 ? parent.children.map((child, idx) => (
+            <div key={idx} className="px-4 py-2 rounded-2xl bg-slate-800 border border-slate-700 text-slate-300 text-sm flex flex-col items-center min-w-[80px]">
+              <span className="font-medium">{child.name}</span>
+              <span className="text-xs text-slate-500">{formatCompactCurrency(child.value)}</span>
+            </div>
+          )) : (
+            <span className="text-slate-500 text-sm">No hay subcategorías</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Vista Global (Top Categories)
+  return (
+    <div className="h-[400px] bg-slate-900 rounded-3xl p-4 relative overflow-hidden flex flex-wrap content-center justify-center gap-4">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-800 to-black opacity-80"></div>
+      
+      {data.slice(0, 6).map((item, idx) => {
+        // Escala visual basada en índice (el primero es más grande)
+        const sizeClasses = idx === 0 ? "w-36 h-36 text-xl" : idx < 3 ? "w-28 h-28 text-base" : "w-20 h-20 text-xs";
+        const gradient = idx === 0 ? "from-blue-500 to-indigo-600" : "from-slate-700 to-slate-600 hover:from-indigo-600 hover:to-purple-600";
+        
+        return (
+          <button
+            key={item.name}
+            onClick={() => onSelectCategory(item.name)}
+            className={`z-10 rounded-full bg-gradient-to-br ${gradient} flex flex-col items-center justify-center text-white shadow-xl transition-all duration-300 hover:scale-110 active:scale-95 ${sizeClasses}`}
+          >
+            <span className="font-bold truncate max-w-[90%]">{item.name}</span>
+            <span className="opacity-80 font-mono mt-1">{formatCompactCurrency(item.value)}</span>
+          </button>
+        );
+      })}
+      
+      <div className="absolute bottom-4 w-full text-center text-[10px] text-slate-500 pointer-events-none">
+        Toca para ver detalles
+      </div>
     </div>
   );
 };
@@ -263,39 +186,33 @@ export default function FinanceApp() {
   const [messages, setMessages] = useState([]);
   const [activeTab, setActiveTab] = useState('chat'); 
   const messagesEndRef = useRef(null);
-  const [selectedTagFilter, setSelectedTagFilter] = useState(null);
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' });
-  const [isClient, setIsClient] = useState(false); 
+  const [isClient, setIsClient] = useState(false);
+  const [selectedHierarchyNode, setSelectedHierarchyNode] = useState(null);
+
+  // Estados expandidos para la lista (Accordion)
+  const [expandedRows, setExpandedRows] = useState({});
 
   useEffect(() => {
-    setIsClient(true); 
+    setIsClient(true);
     const initAuth = async () => {
-        try {
-            await signInAnonymously(auth);
-        } catch (error) {
-            console.error("Error auth:", error);
-        }
+        try { await signInAnonymously(auth); } catch (e) { console.error(e); }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
+    onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    
     const q = query(
       collection(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances'),
       orderBy('createdAt', 'desc'), 
       limit(200)
     );
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).reverse();
       setMessages(msgs);
       if(activeTab === 'chat') setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-    }, (error) => {
-        console.error("Error leyendo datos:", error);
     });
     return () => unsubscribe();
   }, [user, activeTab]);
@@ -305,64 +222,39 @@ export default function FinanceApp() {
     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances', id));
   };
 
+  // --- FILTRADO ---
   const getFilteredMessages = () => {
     return messages.filter(msg => {
       if (!msg.createdAt) return false;
       const msgDate = new Date(msg.createdAt.seconds * 1000);
-      
-      if (dateFilter.start) {
-        const startDate = new Date(dateFilter.start);
-        if (msgDate < startDate) return false;
-      }
+      if (dateFilter.start && msgDate < new Date(dateFilter.start)) return false;
       if (dateFilter.end) {
-        const endDate = new Date(dateFilter.end);
-        endDate.setHours(23, 59, 59); 
-        if (msgDate > endDate) return false;
+        const d = new Date(dateFilter.end); d.setHours(23,59,59);
+        if (msgDate > d) return false;
       }
       return true;
     });
   };
 
   const currentMessages = getFilteredMessages();
+  
+  // Procesar datos para jerarquía
+  const hierarchyData = useMemo(() => processHierarchy(currentMessages), [currentMessages]);
 
-  const calculateStats = (filteredMsgs) => {
-    let totalIncome = 0;
-    let totalExpense = 0;
-    const tagMap = {}; 
+  const totalIncome = currentMessages.filter(m => m.type === 'income').reduce((acc, m) => acc + (m.amount || 0), 0);
+  const totalExpense = currentMessages.filter(m => m.type !== 'income').reduce((acc, m) => acc + (m.amount || 0), 0);
+  const balance = totalIncome - totalExpense;
 
-    filteredMsgs.forEach(msg => {
-      if (!msg.amount) return;
-      if (msg.type === 'income') {
-        totalIncome += msg.amount;
-      } else {
-        totalExpense += msg.amount;
-        if (msg.tags && Array.isArray(msg.tags)) {
-          msg.tags.forEach(tag => {
-            if (!tagMap[tag]) tagMap[tag] = 0;
-            tagMap[tag] += msg.amount;
-          });
-        }
-      }
-    });
-
-    const sortedTags = Object.keys(tagMap)
-      .map(key => ({ name: key, value: tagMap[key] }))
-      .sort((a, b) => b.value - a.value);
-
-    return { totalIncome, totalExpense, sortedTags, balance: totalIncome - totalExpense };
+  const toggleRow = (name) => {
+    setExpandedRows(prev => ({ ...prev, [name]: !prev[name] }));
   };
-
-  const { totalIncome, totalExpense, sortedTags, balance } = calculateStats(currentMessages);
-
-  const messagesForTagModal = selectedTagFilter 
-    ? currentMessages.filter(m => m.tags && Array.isArray(m.tags) && m.tags.includes(selectedTagFilter))
-    : [];
 
   if (!isClient) return null;
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-800">
       
+      {/* HEADER */}
       <header className="bg-white px-4 py-3 shadow-sm z-10 flex justify-between items-center border-b border-slate-100">
         <div className="flex items-center gap-3">
           <div className="bg-indigo-600 p-2 rounded-xl shadow-indigo-200 shadow-lg">
@@ -376,55 +268,41 @@ export default function FinanceApp() {
             </div>
           </div>
         </div>
-        
-        <div className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded-full border border-slate-200">
+        <div className="bg-slate-100 px-2 py-1 rounded-full border border-slate-200">
           <CloudLightning size={12} className="text-blue-500" />
-          <span className="text-[10px] text-slate-500 font-medium">Telegram Bot</span>
         </div>
       </header>
 
       <main className="flex-1 overflow-y-auto bg-slate-50/50">
         
+        {/* CHAT TAB */}
         {activeTab === 'chat' && (
           <div className="p-4 pb-24 space-y-6">
-            {messages.length === 0 && (
-              <div className="text-center py-10 opacity-50">
-                <MessageSquare className="mx-auto w-12 h-12 mb-2" />
-                <p>Esperando mensajes desde Telegram...</p>
-              </div>
-            )}
-
+            {messages.length === 0 && <div className="text-center py-10 opacity-50"><MessageSquare className="mx-auto mb-2"/>Esperando datos...</div>}
             {messages.map((msg) => (
-              <div key={msg.id} className={`flex flex-col animate-in slide-in-from-bottom-2 duration-300 ${msg.sender === 'Yo' ? 'items-end' : 'items-start'}`}>
+              <div key={msg.id} className={`flex flex-col ${msg.sender === 'Yo' ? 'items-end' : 'items-start'}`}>
                 <div className={`flex items-end gap-2 max-w-[90%] ${msg.sender === 'Yo' ? 'flex-row-reverse' : 'flex-row'}`}>
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 shadow-sm ${msg.sender === 'Yo' ? 'bg-indigo-500' : 'bg-pink-500'}`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs text-white font-bold shadow-sm ${msg.sender === 'Yo' ? 'bg-indigo-500' : 'bg-pink-500'}`}>
                     {msg.sender === 'Yo' ? 'Y' : 'E'}
                   </div>
-                  <div className={`p-3 rounded-2xl shadow-sm border ${msg.sender === 'Yo' ? 'bg-white border-indigo-50 rounded-tr-none' : 'bg-white border-pink-50 rounded-tl-none'}`}>
-                    <p className="text-sm text-slate-600 mb-2 italic">"{msg.originalText || msg.text}"</p>
-                    <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 min-w-[200px]">
-                      <div className="flex justify-between items-start mb-2">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${msg.type === 'income' ? 'bg-green-100 text-green-700' : msg.type === 'debt_payment' ? 'bg-orange-100 text-orange-700' : 'bg-red-50 text-red-600'}`}>
-                          {msg.type === 'income' ? 'INGRESO' : msg.type === 'debt_payment' ? 'PAGO DEUDA' : 'GASTO'}
+                  <div className={`p-3 rounded-2xl shadow-sm border text-sm ${msg.sender === 'Yo' ? 'bg-white rounded-tr-none' : 'bg-white rounded-tl-none'}`}>
+                    <p className="mb-2 text-slate-600">"{msg.originalText}"</p>
+                    <div className="bg-slate-50 rounded-xl p-2 border border-slate-100 min-w-[180px]">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${msg.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                          {msg.type === 'income' ? 'INGRESO' : 'GASTO'}
                         </span>
-                        <span className="font-bold text-slate-800 text-lg">${msg.amount?.toLocaleString()}</span>
+                        <span className="font-bold">${msg.amount?.toLocaleString()}</span>
                       </div>
                       <div className="flex flex-wrap gap-1">
-                        {Array.isArray(msg.tags) ? msg.tags.map((tag, idx) => (
-                          <span key={idx} className="text-[10px] bg-white border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded-md flex items-center gap-1"><Tag size={10} /> {tag}</span>
-                        )) : <span className="text-xs text-red-300">Sin etiquetas</span>}
+                        {Array.isArray(msg.tags) && msg.tags.map((t, i) => (
+                          <span key={i} className="text-[9px] bg-white border px-1 rounded text-slate-500">{t}</span>
+                        ))}
                       </div>
-                      <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center">
-                         <span className="text-[9px] text-slate-400 flex items-center gap-1">
-                           <Zap size={8} /> IA
-                         </span>
-                         <span className="text-[9px] text-slate-400">
-                           {formatDateSafe(msg.createdAt)}
-                         </span>
-                      </div>
+                      <div className="text-[9px] text-right text-slate-300 mt-1">{formatDateSafe(msg.createdAt)}</div>
                     </div>
                   </div>
-                  <button onClick={() => handleDelete(msg.id)} className="text-slate-300 hover:text-red-400 p-1"><Trash2 size={14} /></button>
+                  <button onClick={() => handleDelete(msg.id)} className="text-slate-300 hover:text-red-400"><Trash2 size={14}/></button>
                 </div>
               </div>
             ))}
@@ -432,75 +310,99 @@ export default function FinanceApp() {
           </div>
         )}
 
+        {/* EXPLORE TAB (NUEVO HTML BUBBLES) */}
         {activeTab === 'explore' && (
           <div className="p-4 space-y-6 pb-24">
              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-4">
                <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Network className="text-indigo-600" /> Mapa de Gastos</h2>
-               <p className="text-xs text-slate-500">Visualización interactiva de tu ecosistema financiero.</p>
+               <p className="text-xs text-slate-500">Toca las burbujas para ver detalles.</p>
              </div>
-             <NetworkExplorer messages={currentMessages} onSelectTag={setSelectedTagFilter} />
-             {selectedTagFilter && (
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-in slide-in-from-bottom-4">
-                  <div className="p-3 bg-indigo-50 border-b border-indigo-100 flex justify-between items-center">
-                    <h3 className="font-bold text-indigo-900 text-sm">Detalle: {selectedTagFilter}</h3>
-                    <span className="text-xs text-indigo-500 font-mono">Total: ${messagesForTagModal.reduce((sum, m) => sum + (m.amount||0), 0).toLocaleString()}</span>
-                  </div>
-                  <div className="max-h-[300px] overflow-y-auto">
-                    {messagesForTagModal.map(m => (
-                      <div key={m.id} className="p-3 border-b border-slate-50 flex justify-between items-center text-sm hover:bg-slate-50 transition-colors">
-                         <div>
-                            <p className="text-slate-800 font-medium line-clamp-1">{m.originalText}</p>
-                            <div className="flex gap-1 mt-1">{Array.isArray(m.tags) && m.tags.slice(0,3).map(t => (<span key={t} className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded">{t}</span>))}</div>
-                         </div>
-                         <span className="font-bold text-slate-700 whitespace-nowrap">-${m.amount?.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-             )}
+             
+             {/* Componente de Burbujas HTML */}
+             <BubbleExplorer 
+                data={hierarchyData} 
+                selectedCategory={selectedHierarchyNode}
+                onSelectCategory={setSelectedHierarchyNode}
+             />
           </div>
         )}
 
+        {/* STATS TAB (LISTA JERÁRQUICA) */}
         {activeTab === 'stats' && (
           <div className="p-4 space-y-6 pb-24">
+            
+            {/* Filtros */}
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-              <h3 className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-2"><CalendarIcon size={14} /> Rango de Fechas</h3>
-              <div className="flex gap-2 items-center">
-                <input type="date" value={dateFilter.start} onChange={(e) => setDateFilter(prev => ({ ...prev, start: e.target.value }))} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs" />
-                <input type="date" value={dateFilter.end} onChange={(e) => setDateFilter(prev => ({ ...prev, end: e.target.value }))} className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs" />
-                {(dateFilter.start || dateFilter.end) && (<button onClick={() => setDateFilter({ start: '', end: '' })} className="p-2 bg-slate-100 rounded-lg"><X size={14}/></button>)}
+              <h3 className="text-xs font-bold text-slate-400 uppercase mb-2 flex gap-2"><CalendarIcon size={14}/> Fechas</h3>
+              <div className="flex gap-2">
+                <input type="date" value={dateFilter.start} onChange={(e) => setDateFilter(prev => ({...prev, start: e.target.value}))} className="flex-1 bg-slate-50 border rounded-lg px-2 py-2 text-xs"/>
+                <input type="date" value={dateFilter.end} onChange={(e) => setDateFilter(prev => ({...prev, end: e.target.value}))} className="flex-1 bg-slate-50 border rounded-lg px-2 py-2 text-xs"/>
+                {(dateFilter.start || dateFilter.end) && <button onClick={() => setDateFilter({start:'', end:''})} className="p-2 bg-slate-100 rounded"><X size={14}/></button>}
               </div>
             </div>
+
+            {/* Resumen */}
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                <div className="flex items-center gap-2 mb-1 text-green-600"><TrendingUp size={16} /> <span className="text-xs font-bold uppercase">Ingresos</span></div>
-                <p className="text-2xl font-bold text-slate-800">${totalIncome.toLocaleString()}</p>
+              <div className="bg-white p-4 rounded-2xl border border-slate-100">
+                <div className="text-green-600 text-xs font-bold mb-1 flex gap-1"><TrendingUp size={14}/> INGRESOS</div>
+                <div className="text-xl font-bold">${totalIncome.toLocaleString()}</div>
               </div>
-              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                <div className="flex items-center gap-2 mb-1 text-red-500"><TrendingDown size={16} /> <span className="text-xs font-bold uppercase">Egresos</span></div>
-                <p className="text-2xl font-bold text-slate-800">${totalExpense.toLocaleString()}</p>
+              <div className="bg-white p-4 rounded-2xl border border-slate-100">
+                <div className="text-red-500 text-xs font-bold mb-1 flex gap-1"><TrendingDown size={14}/> EGRESOS</div>
+                <div className="text-xl font-bold">${totalExpense.toLocaleString()}</div>
               </div>
             </div>
-            <div className={`p-4 rounded-2xl shadow-sm border flex justify-between items-center ${balance >= 0 ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
-              <div><p className="text-xs font-bold uppercase mb-1 opacity-70">Liquidez</p><h2 className={`text-3xl font-bold ${balance >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>${balance.toLocaleString()}</h2></div>
-              <Wallet className={balance >= 0 ? "text-emerald-500" : "text-red-500"} size={24} />
-            </div>
+
+            {/* LISTA JERÁRQUICA (Con sangría) */}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Filter size={18} /> Top Gastos</h3>
-              <div className="space-y-3">
-                {sortedTags.length > 0 ? sortedTags.slice(0, 10).map((tag, idx) => (
-                  <div key={tag.name} className="flex justify-between items-center text-sm">
-                      <span className="font-medium text-slate-700 w-1/3 truncate">{tag.name}</span>
-                      <div className="flex-1 mx-2 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 rounded-full" style={{ width: totalExpense > 0 ? `${(tag.value / totalExpense) * 100}%` : '0%' }} /></div>
-                      <span className="font-bold text-slate-800 text-xs w-20 text-right">${tag.value.toLocaleString()}</span>
+              <div className="space-y-1">
+                {hierarchyData.length > 0 ? hierarchyData.map((item) => (
+                  <div key={item.name} className="border-b border-slate-50 last:border-0">
+                    {/* Fila Padre */}
+                    <div 
+                      className="flex justify-between items-center py-3 cursor-pointer hover:bg-slate-50 transition-colors"
+                      onClick={() => toggleRow(item.name)}
+                    >
+                      <div className="flex items-center gap-2">
+                        {item.children.length > 0 ? (
+                          expandedRows[item.name] ? <ChevronDown size={16} className="text-slate-400"/> : <ChevronRight size={16} className="text-slate-400"/>
+                        ) : <div className="w-4"/>}
+                        
+                        <div>
+                          <span className="font-medium text-slate-700 text-sm block">{item.name}</span>
+                          <div className="w-24 h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
+                            <div className="h-full bg-indigo-500" style={{ width: `${Math.min((item.value / totalExpense) * 100, 100)}%` }}></div>
+                          </div>
+                        </div>
+                      </div>
+                      <span className="font-bold text-slate-800 text-sm">${item.value.toLocaleString()}</span>
+                    </div>
+
+                    {/* Fila Hijos (Sangría) */}
+                    {expandedRows[item.name] && item.children.length > 0 && (
+                      <div className="bg-slate-50/50 rounded-lg mb-2 overflow-hidden animate-in slide-in-from-top-2">
+                        {item.children.map((child, cIdx) => (
+                          <div key={cIdx} className="flex justify-between items-center py-2 px-3 pl-10 border-t border-white text-xs hover:bg-indigo-50/30">
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <Layers size={12} className="opacity-50"/>
+                              <span>{child.name}</span>
+                            </div>
+                            <span className="font-mono text-slate-600">${child.value.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )) : (<p className="text-slate-400 text-sm text-center">Sin datos.</p>)}
+                )) : <div className="text-center text-slate-400 py-4 text-sm">No hay gastos registrados</div>}
               </div>
             </div>
+
           </div>
         )}
       </main>
 
+      {/* NAV */}
       <nav className="bg-white border-t border-slate-100 flex justify-around p-1 z-30 pb-safe">
         <button onClick={() => setActiveTab('chat')} className={`p-3 rounded-xl transition-all ${activeTab === 'chat' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><MessageSquare size={24} /></button>
         <button onClick={() => setActiveTab('explore')} className={`p-3 rounded-xl transition-all ${activeTab === 'explore' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><Network size={24} /></button>
