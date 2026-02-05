@@ -60,34 +60,40 @@ export default async function handler(req, res) {
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     
-    // --- PROMPT BLINDADO PARA JERARQUÍA ESTÁNDAR ---
+    // --- PROMPT BLINDADO: LISTA CERRADA DE CATEGORÍAS ---
     const prompt = `
       Eres un contador experto. Analiza el mensaje: "${message.text}"
       
-      OBJETIVO: Clasificar gasto/ingreso y generar etiquetas jerárquicas estrictas.
+      OBJETIVO: Clasificar y etiquetar con una jerarquía estricta para evitar filtros desordenados.
 
-      REGLAS DE CLASIFICACIÓN ('type'):
-      - 'income': SOLO entrada de dinero.
-      - 'expense': Salida de dinero (incluye pagos a empleados/servicios).
-      - 'debt_payment': Abonos a deudas propias.
-
-      REGLAS DE ETIQUETAS ('tags') - FORMATO: [CATEGORÍA MACRO, SUBCATEGORÍA, DETALLE]:
-      1. La PRIMERA etiqueta DEBE ser una de estas MACRO CATEGORÍAS:
-         - "Hogar" (Servicios, Arriendo, Empleados/Omaira/Tania, Mantenimiento)
-         - "Alimentación" (Mercado, Restaurantes)
-         - "Transporte" (Gasolina, Mantenimiento, Seguros, Gas)
-         - "Salud" (Citas, Medicamentos)
+      1. REGLA DE ORO (Categoría Macro):
+         La PRIMERA etiqueta ('tags[0]') DEBE ser obligatoriamente una de estas:
+         - "Hogar"
+         - "Transporte"
+         - "Alimentación"
+         - "Salud"
          - "Educación"
          - "Ocio"
          - "Mascotas/Finca"
-      
-      2. PROHIBIDO usar como 1ra etiqueta: "Pago", "Quincena", "Mensualidad", "Compra". Esas palabras NO son categorías.
-      
-      3. EJEMPLOS CORRECTOS:
-         - "Pago quincena Omaira" -> ["Hogar", "Empleados", "Omaira"]
-         - "Gas carro sofi" -> ["Transporte", "Gas", "Sofi"]
-         - "Mercado en Makro" -> ["Alimentación", "Mercado", "Makro"]
-      
+         - "Deudas"
+         - "Otros"
+
+      2. REGLAS ESPECÍFICAS DE TRANSPORTE:
+         - "Gasolina", "Tanqueada", "Gas": -> ["Transporte", "Combustible"]
+         - "Lavada", "Lavado", "Limpieza", "Aspirada": -> ["Transporte", "Limpieza"] (NO usar 'Mantenimiento').
+         - "Aceite", "Taller", "Revisión", "Llantas", "Repuesto", "Mecánico": -> ["Transporte", "Mantenimiento"].
+         - "Parqueadero": -> ["Transporte", "Parqueadero"].
+         - "Papeles", "Seguro", "Soat": -> ["Transporte", "Legales"].
+
+      3. PROHIBICIONES:
+         - NUNCA pongas como primera etiqueta: "Pago", "Quincena", "Mensualidad", "Compra", "Lavada".
+         - NUNCA inventes categorías macro nuevas fuera de la lista de la regla 1.
+
+      REGLAS DE TIPO ('type'):
+      - 'income': Entradas de dinero.
+      - 'expense': Salidas de dinero.
+      - 'debt_payment': Abonos a deuda.
+
       Salida JSON: { "amount": number, "type": "income" | "expense" | "debt_payment", "tags": string[] }
     `;
 
