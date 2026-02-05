@@ -16,7 +16,7 @@ import {
   Zap, CloudLightning, Calendar as CalendarIcon, Network
 } from 'lucide-react';
 
-// --- TUS CREDENCIALES REALES (YA CONFIGURADAS) ---
+// --- CREDENCIALES REALES ---
 const firebaseConfig = {
   apiKey: "AIzaSyD4oU6BxzgRuP8wj4aQAvUtcDpvMSR2mMQ",
   authDomain: "finanzas-familiares-7f59a.firebaseapp.com",
@@ -27,10 +27,9 @@ const firebaseConfig = {
   measurementId: "G-8X8KFTCKM0"
 };
 
-// --- NOMBRE DE TU COLECCIÓN EN FIREBASE ---
 const appId = 'Finanzas_familia';
 
-// --- INICIALIZACIÓN SEGURA ---
+// --- INICIALIZACIÓN ---
 let app;
 if (getApps().length > 0) {
   app = getApp();
@@ -41,8 +40,16 @@ if (getApps().length > 0) {
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Helper formato moneda
+// Helper seguro para fechas
+const formatDateSafe = (createdAt) => {
+  if (!createdAt || !createdAt.seconds) return '';
+  try {
+    return new Date(createdAt.seconds * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  } catch (e) { return ''; }
+};
+
 const formatCompactCurrency = (value) => {
+  if (!value || isNaN(value)) return '$0';
   if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
   if (value >= 1000) return `$${(value / 1000).toFixed(0)}k`;
   return `$${value}`;
@@ -56,12 +63,15 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
     const nodeMap = {};
     let maxVal = 0;
 
-    if (!messages) return { nodes: [], links: [], maxValue: 0 };
+    if (!messages || messages.length === 0) return { nodes: [], links: [], maxValue: 0 };
+
+    // Filtrar mensajes inválidos antes de procesar
+    const validMessages = messages.filter(m => m.amount && Array.isArray(m.tags));
 
     if (!centerTag) {
-      messages.forEach(msg => {
-        if (!msg.amount || msg.type === 'income') return;
-        msg.tags?.forEach(tag => {
+      validMessages.forEach(msg => {
+        if (msg.type === 'income') return;
+        msg.tags.forEach(tag => {
           if (!nodeMap[tag]) nodeMap[tag] = { id: tag, value: 0, type: 'main' };
           nodeMap[tag].value += msg.amount;
         });
@@ -85,8 +95,8 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
       let centerValue = 0;
       const relatedMap = {};
 
-      messages.forEach(msg => {
-        if (!msg.tags?.includes(centerTag) || !msg.amount) return;
+      validMessages.forEach(msg => {
+        if (!msg.tags.includes(centerTag)) return;
         
         centerValue += msg.amount;
 
@@ -216,11 +226,10 @@ export default function FinanceApp() {
   const messagesEndRef = useRef(null);
   const [selectedTagFilter, setSelectedTagFilter] = useState(null);
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' });
-  const [isClient, setIsClient] = useState(false); // FIX: Estado para controlar renderizado en cliente
+  const [isClient, setIsClient] = useState(false); 
 
-  // --- AUTENTICACIÓN ---
   useEffect(() => {
-    setIsClient(true); // FIX: Confirmamos que estamos en el cliente
+    setIsClient(true); 
     const initAuth = async () => {
         try {
             await signInAnonymously(auth);
@@ -233,11 +242,9 @@ export default function FinanceApp() {
     return () => unsubscribe();
   }, []);
 
-  // --- BASE DE DATOS (LECTURA) ---
   useEffect(() => {
     if (!user) return;
     
-    // Escuchar la colección correcta
     const q = query(
       collection(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances'),
       orderBy('createdAt', 'desc'), 
@@ -259,7 +266,6 @@ export default function FinanceApp() {
     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances', id));
   };
 
-  // --- FILTROS Y ESTADÍSTICAS ---
   const getFilteredMessages = () => {
     return messages.filter(msg => {
       if (!msg.createdAt) return false;
@@ -291,6 +297,7 @@ export default function FinanceApp() {
         totalIncome += msg.amount;
       } else {
         totalExpense += msg.amount;
+        // Validación extra para evitar errores
         if (msg.tags && Array.isArray(msg.tags)) {
           msg.tags.forEach(tag => {
             if (!tagMap[tag]) tagMap[tag] = 0;
@@ -310,13 +317,11 @@ export default function FinanceApp() {
   const { totalIncome, totalExpense, sortedTags, balance } = calculateStats(currentMessages);
 
   const messagesForTagModal = selectedTagFilter 
-    ? currentMessages.filter(m => m.tags && m.tags.includes(selectedTagFilter))
+    ? currentMessages.filter(m => m.tags && Array.isArray(m.tags) && m.tags.includes(selectedTagFilter))
     : [];
 
-  // FIX: Prevenir renderizado en servidor (evita pantalla negra)
   if (!isClient) return null;
 
-  // --- RENDERIZADO ---
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-slate-800">
       
@@ -367,9 +372,19 @@ export default function FinanceApp() {
                         <span className="font-bold text-slate-800 text-lg">${msg.amount?.toLocaleString()}</span>
                       </div>
                       <div className="flex flex-wrap gap-1">
-                        {msg.tags?.map((tag, idx) => (
+                        {/* VALIDACIÓN DE ARRAY: Evita la pantalla negra */}
+                        {Array.isArray(msg.tags) ? msg.tags.map((tag, idx) => (
                           <span key={idx} className="text-[10px] bg-white border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded-md flex items-center gap-1"><Tag size={10} /> {tag}</span>
-                        ))}
+                        )) : <span className="text-xs text-red-300">Sin etiquetas</span>}
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center">
+                         <span className="text-[9px] text-slate-400 flex items-center gap-1">
+                           <Zap size={8} /> IA
+                         </span>
+                         <span className="text-[9px] text-slate-400">
+                           {/* VALIDACIÓN DE FECHA: Evita errores si falta createdAt */}
+                           {formatDateSafe(msg.createdAt)}
+                         </span>
                       </div>
                     </div>
                   </div>
@@ -399,7 +414,7 @@ export default function FinanceApp() {
                       <div key={m.id} className="p-3 border-b border-slate-50 flex justify-between items-center text-sm hover:bg-slate-50 transition-colors">
                          <div>
                             <p className="text-slate-800 font-medium line-clamp-1">{m.originalText}</p>
-                            <div className="flex gap-1 mt-1">{m.tags?.slice(0,3).map(t => (<span key={t} className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded">{t}</span>))}</div>
+                            <div className="flex gap-1 mt-1">{Array.isArray(m.tags) && m.tags.slice(0,3).map(t => (<span key={t} className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded">{t}</span>))}</div>
                          </div>
                          <span className="font-bold text-slate-700 whitespace-nowrap">-${m.amount?.toLocaleString()}</span>
                       </div>
