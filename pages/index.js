@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
+// IMPORTANTE: Agregamos getApps y getApp para la corrección
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getFirestore, collection, onSnapshot, 
   query, orderBy, deleteDoc, doc, limit 
@@ -16,10 +17,9 @@ import {
   Zap, CloudLightning, Calendar as CalendarIcon, Network
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE (MODO PRODUCCIÓN/VERCEL) ---
+// --- CONFIGURACIÓN DE FIREBASE ---
 
-// 1. REEMPLAZA ESTO CON TUS DATOS REALES DE FIREBASE (Pestaña General)
-// <--- IMPORTANTE: Copia esto de Firebase Console > Configuración > General > Tus Apps > Web
+// 1. REEMPLAZA ESTO CON TUS DATOS REALES DE FIREBASE
 const firebaseConfig = {
   apiKey: "AIzaSyD4oU6BxzgRuP8wj4aQAvUtcDpvMSR2mMQ",
   authDomain: "finanzas-familiares-7f59a.firebaseapp.com",
@@ -29,14 +29,15 @@ const firebaseConfig = {
   appId: "1:24331042269:web:54c6521656fd92abfb0a34",
   measurementId: "G-8X8KFTCKM0"
 };
-// 2. ID DE LA APP (Debe coincidir con el backend)
-// Si en Vercel pusiste 'NEXT_PUBLIC_APP_ID', esto lo leerá automáticamente.
-// Si no, asegúrate de que el texto 'finance-app-advanced' sea el mismo en ambos lados.
+
+// 2. ID DE LA APP
 const appId = process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia';
 
-// Inicialización
-// Prevenimos reinicialización en Next.js con esta comprobación
-const app = initializeApp.apps.length > 0 ? initializeApp.apps[0] : initializeApp(firebaseConfig);
+// --- CORRECCIÓN DEL ERROR DE BUILD ---
+// Usamos getApps() para verificar si ya existe una instancia.
+// Esto evita el error "reading length of undefined".
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
 const auth = getAuth(app);
 const db = getFirestore(app);
 
@@ -47,7 +48,7 @@ const formatCompactCurrency = (value) => {
   return `$${value}`;
 };
 
-// --- COMPONENTE DE RED (SIN CAMBIOS) ---
+// --- COMPONENTE DE RED ---
 const NetworkExplorer = ({ messages, onSelectTag }) => {
   const [centerTag, setCenterTag] = useState(null);
   
