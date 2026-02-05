@@ -216,9 +216,11 @@ export default function FinanceApp() {
   const messagesEndRef = useRef(null);
   const [selectedTagFilter, setSelectedTagFilter] = useState(null);
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' });
+  const [isClient, setIsClient] = useState(false); // FIX: Estado para controlar renderizado en cliente
 
   // --- AUTENTICACIÓN ---
   useEffect(() => {
+    setIsClient(true); // FIX: Confirmamos que estamos en el cliente
     const initAuth = async () => {
         try {
             await signInAnonymously(auth);
@@ -310,6 +312,9 @@ export default function FinanceApp() {
   const messagesForTagModal = selectedTagFilter 
     ? currentMessages.filter(m => m.tags && m.tags.includes(selectedTagFilter))
     : [];
+
+  // FIX: Prevenir renderizado en servidor (evita pantalla negra)
+  if (!isClient) return null;
 
   // --- RENDERIZADO ---
   return (
