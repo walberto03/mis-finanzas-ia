@@ -14,7 +14,7 @@ import {
   PieChart as PieIcon, MessageSquare, 
   Tag, TrendingUp, TrendingDown, Filter, X, Wallet, 
   Zap, CloudLightning, Calendar as CalendarIcon, Network, Trash2,
-  ChevronRight, ChevronDown, Layers
+  ChevronRight, ChevronDown, Layers, Edit3, CornerDownRight
 } from 'lucide-react';
 
 // --- CREDENCIALES REALES ---
@@ -53,130 +53,186 @@ const formatCompactCurrency = (value) => {
   if (!value || isNaN(value)) return '$0';
   if (value >= 1000000) return `$${(value / 1000000).toFixed(1)}M`;
   if (value >= 1000) return `$${(value / 1000).toFixed(0)}k`;
-  return `$${(value / 1000).toFixed(0)}k`; // Formato corto tipo 148k
+  return `$${(value / 1000).toFixed(0)}k`;
 };
 
-// --- LÓGICA DE JERARQUÍA ---
-// Esta función organiza los datos en Padre > Hijo automáticamente
+// --- LÓGICA DE JERARQUÍA PROFUNDA (MULTI-NIVEL) ---
 const processHierarchy = (messages) => {
   const tagCounts = {};
-  const tagValues = {};
-  const hierarchy = {};
-
-  // 1. Contar frecuencias globales para determinar quién es "Padre"
+  
+  // 1. Contar frecuencias globales para determinar jerarquía
   messages.forEach(msg => {
     if (msg.type === 'income' || !msg.tags) return;
-    msg.tags.forEach(t => {
-      tagCounts[t] = (tagCounts[t] || 0) + 1;
-      tagValues[t] = (tagValues[t] || 0) + msg.amount;
-    });
+    msg.tags.forEach(t => tagCounts[t] = (tagCounts[t] || 0) + 1);
   });
 
-  // 2. Agrupar transacciones
+  const root = { name: 'root', value: 0, children: {} };
+
   messages.forEach(msg => {
     if (msg.type === 'income' || !msg.tags || msg.tags.length === 0) return;
 
-    // El tag "Padre" es el más frecuente globalmente en este mensaje
-    // Ej: En ["Gas", "Transporte"], Transporte es más común -> Padre
-    const sortedTags = [...msg.tags].sort((a, b) => (tagCounts[b] || 0) - (tagCounts[a] || 0));
-    const parentTag = sortedTags[0];
+    // Ordenar tags por frecuencia (Mayor frecuencia = Padre / Categoría más grande)
+    // Ej: [Transporte(10), Gas(5), Sofi(1)] -> Transporte > Gas > Sofi
+    const sortedTags = [...new Set(msg.tags)].sort((a, b) => {
+      const diff = (tagCounts[b] || 0) - (tagCounts[a] || 0);
+      return diff !== 0 ? diff : a.localeCompare(b);
+    });
+
+    let currentNode = root;
     
-    if (!hierarchy[parentTag]) {
-      hierarchy[parentTag] = { 
-        name: parentTag, 
-        value: 0, 
-        count: 0,
-        children: {} 
-      };
-    }
-
-    hierarchy[parentTag].value += msg.amount;
-    hierarchy[parentTag].count += 1;
-
-    // Los demás tags son hijos
-    sortedTags.slice(1).forEach(childTag => {
-      if (!hierarchy[parentTag].children[childTag]) {
-        hierarchy[parentTag].children[childTag] = { name: childTag, value: 0 };
+    // Construir el árbol nodo por nodo
+    sortedTags.forEach((tag) => {
+      if (!currentNode.children[tag]) {
+        currentNode.children[tag] = { 
+          name: tag, 
+          value: 0, 
+          children: {} // Recursividad
+        };
       }
-      hierarchy[parentTag].children[childTag].value += msg.amount;
+      
+      const node = currentNode.children[tag];
+      node.value += msg.amount; // Sumar valor al nodo actual
+      currentNode = node; // Bajar un nivel
     });
   });
 
-  // Convertir a array y ordenar por valor
-  return Object.values(hierarchy)
-    .map(parent => ({
-      ...parent,
-      children: Object.values(parent.children).sort((a, b) => b.value - a.value)
-    }))
-    .sort((a, b) => b.value - a.value);
+  // Convertir objeto a array recursivamente
+  const convertToArray = (nodeMap) => {
+    return Object.values(nodeMap)
+      .map(node => ({
+        ...node,
+        children: convertToArray(node.children).sort((a, b) => b.value - a.value)
+      }))
+      .sort((a, b) => b.value - a.value);
+  };
+
+  return convertToArray(root.children);
 };
 
-// --- COMPONENTE BUBBLE EXPLORER (HTML PURO - SIN SVG) ---
-const BubbleExplorer = ({ data, onSelectCategory, selectedCategory }) => {
+// --- COMPONENTE BUBBLE EXPLORER CON NAVEGACIÓN PROFUNDA ---
+const BubbleExplorer = ({ data }) => {
+  const [history, setHistory] = useState([]); // Historial de navegación
+  const currentView = history.length === 0 ? data : (history[history.length - 1].children || []);
+  const currentParent = history.length > 0 ? history[history.length - 1] : null;
+
+  const handleDrillDown = (item) => {
+    if (item.children && item.children.length > 0) {
+      setHistory([...history, item]);
+    }
+  };
+
+  const handleBack = () => {
+    setHistory(history.slice(0, -1));
+  };
+
   if (!data || data.length === 0) return <div className="text-center text-slate-400 p-10">Sin datos</div>;
 
-  // Si hay una categoría seleccionada, mostramos detalle
-  if (selectedCategory) {
-    const parent = data.find(d => d.name === selectedCategory);
-    if (!parent) return null;
-
-    return (
-      <div className="h-[400px] bg-slate-900 rounded-3xl p-6 relative overflow-hidden flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
-        <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/50 to-slate-900"></div>
-        
-        <button 
-          onClick={() => onSelectCategory(null)}
-          className="absolute top-4 left-4 z-20 bg-white/10 text-white px-3 py-1 rounded-full text-xs hover:bg-white/20 flex items-center gap-1"
-        >
-          <X size={14} /> Volver
-        </button>
-
-        {/* Burbuja Central (Padre) */}
-        <div className="z-10 w-32 h-32 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex flex-col items-center justify-center shadow-lg shadow-indigo-500/30 mb-8 border-4 border-slate-800">
-          <span className="text-white font-bold text-lg">{parent.name}</span>
-          <span className="text-indigo-100 text-sm">{formatCompactCurrency(parent.value)}</span>
-        </div>
-
-        {/* Burbujas Hijos */}
-        <div className="z-10 flex flex-wrap justify-center gap-3">
-          {parent.children.length > 0 ? parent.children.map((child, idx) => (
-            <div key={idx} className="px-4 py-2 rounded-2xl bg-slate-800 border border-slate-700 text-slate-300 text-sm flex flex-col items-center min-w-[80px]">
-              <span className="font-medium">{child.name}</span>
-              <span className="text-xs text-slate-500">{formatCompactCurrency(child.value)}</span>
-            </div>
-          )) : (
-            <span className="text-slate-500 text-sm">No hay subcategorías</span>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // Vista Global (Top Categories)
   return (
-    <div className="h-[400px] bg-slate-900 rounded-3xl p-4 relative overflow-hidden flex flex-wrap content-center justify-center gap-4">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-800 to-black opacity-80"></div>
+    <div className="h-[420px] bg-slate-900 rounded-3xl p-6 relative overflow-hidden flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300 shadow-2xl border border-slate-800">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-indigo-900/40 via-slate-950 to-black"></div>
       
-      {data.slice(0, 6).map((item, idx) => {
-        // Escala visual basada en índice (el primero es más grande)
-        const sizeClasses = idx === 0 ? "w-36 h-36 text-xl" : idx < 3 ? "w-28 h-28 text-base" : "w-20 h-20 text-xs";
-        const gradient = idx === 0 ? "from-blue-500 to-indigo-600" : "from-slate-700 to-slate-600 hover:from-indigo-600 hover:to-purple-600";
-        
-        return (
-          <button
-            key={item.name}
-            onClick={() => onSelectCategory(item.name)}
-            className={`z-10 rounded-full bg-gradient-to-br ${gradient} flex flex-col items-center justify-center text-white shadow-xl transition-all duration-300 hover:scale-110 active:scale-95 ${sizeClasses}`}
+      {/* Botón Volver o Título */}
+      <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+        {history.length > 0 ? (
+          <button 
+            onClick={handleBack}
+            className="bg-white/10 text-white px-3 py-1.5 rounded-full text-xs hover:bg-white/20 flex items-center gap-1 backdrop-blur-md transition-all border border-white/10"
           >
-            <span className="font-bold truncate max-w-[90%]">{item.name}</span>
-            <span className="opacity-80 font-mono mt-1">{formatCompactCurrency(item.value)}</span>
+            <X size={14} /> {currentParent.name}
           </button>
-        );
-      })}
-      
-      <div className="absolute bottom-4 w-full text-center text-[10px] text-slate-500 pointer-events-none">
-        Toca para ver detalles
+        ) : (
+          <span className="text-xs text-slate-500 font-medium px-2">Vista Global</span>
+        )}
       </div>
+
+      {/* Contenedor de Burbujas */}
+      <div className="z-10 flex flex-wrap content-center justify-center gap-4 max-w-sm">
+        {currentView.slice(0, 6).map((item, idx) => {
+          // Si estamos en la raíz, la primera burbuja es gigante
+          const isBig = idx === 0 && history.length === 0;
+          const sizeClasses = isBig ? "w-32 h-32 text-lg" : "w-24 h-24 text-sm";
+          const colorClasses = isBig 
+            ? "from-indigo-600 to-violet-600 shadow-indigo-500/20" 
+            : "from-slate-800 to-slate-700 hover:from-indigo-600 hover:to-violet-600 border border-white/5";
+
+          return (
+            <button
+              key={item.name}
+              onClick={() => handleDrillDown(item)}
+              disabled={item.children.length === 0}
+              className={`rounded-full bg-gradient-to-br ${colorClasses} flex flex-col items-center justify-center text-white shadow-xl transition-all duration-300 hover:scale-105 active:scale-95 ${sizeClasses} relative group`}
+            >
+              <span className="font-bold truncate max-w-[85%] capitalize">{item.name}</span>
+              <span className="text-indigo-200/80 font-mono text-xs mt-0.5">{formatCompactCurrency(item.value)}</span>
+              
+              {/* Indicador de que hay más contenido dentro */}
+              {item.children.length > 0 && (
+                <div className="absolute bottom-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <ChevronDown size={12} className="text-white/50" />
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      
+      {currentView.length === 0 && (
+        <p className="text-slate-500 text-sm z-10">No hay subcategorías</p>
+      )}
+
+      <div className="absolute bottom-4 w-full text-center text-[10px] text-slate-600 pointer-events-none">
+        {history.length === 0 ? "Toca una categoría para entrar" : "Toca para ver detalles"}
+      </div>
+    </div>
+  );
+};
+
+// --- COMPONENTE FILA JERÁRQUICA RECURSIVA ---
+const HierarchyRow = ({ item, level = 0, total }) => {
+  const [expanded, setExpanded] = useState(false);
+  const hasChildren = item.children && item.children.length > 0;
+  
+  // Sangría visual basada en el nivel
+  const paddingLeft = level * 16; 
+
+  return (
+    <div className="border-b border-slate-50 last:border-0">
+      <div 
+        className={`flex justify-between items-center py-3 pr-2 cursor-pointer transition-colors ${level > 0 ? 'hover:bg-slate-50' : 'hover:bg-indigo-50/30'}`}
+        style={{ paddingLeft: `${paddingLeft + 8}px` }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-2 overflow-hidden">
+          {hasChildren ? (
+            expanded ? <ChevronDown size={14} className="text-slate-400 shrink-0"/> : <ChevronRight size={14} className="text-slate-400 shrink-0"/>
+          ) : (
+            level > 0 ? <CornerDownRight size={12} className="text-slate-300 shrink-0 ml-0.5"/> : <div className="w-3.5"/>
+          )}
+          
+          <div className="min-w-0">
+            <span className={`block truncate ${level === 0 ? 'font-bold text-slate-700' : 'font-medium text-slate-600 text-sm'}`}>
+              {item.name}
+            </span>
+            {level === 0 && (
+              <div className="w-20 h-1 bg-slate-100 rounded-full mt-1 overflow-hidden">
+                <div className="h-full bg-indigo-500" style={{ width: `${Math.min((item.value / total) * 100, 100)}%` }}></div>
+              </div>
+            )}
+          </div>
+        </div>
+        <span className={`font-mono ${level === 0 ? 'text-slate-800 font-bold' : 'text-slate-500 text-xs'}`}>
+          ${item.value.toLocaleString()}
+        </span>
+      </div>
+
+      {/* Renderizado Recursivo de Hijos */}
+      {expanded && hasChildren && (
+        <div className="bg-slate-50/30 border-l-2 border-indigo-100 ml-4 mb-2 rounded-r-lg">
+          {item.children.map((child) => (
+            <HierarchyRow key={child.name} item={child} level={level + 1} total={item.value} />
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -188,10 +244,6 @@ export default function FinanceApp() {
   const messagesEndRef = useRef(null);
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' });
   const [isClient, setIsClient] = useState(false);
-  const [selectedHierarchyNode, setSelectedHierarchyNode] = useState(null);
-
-  // Estados expandidos para la lista (Accordion)
-  const [expandedRows, setExpandedRows] = useState({});
 
   useEffect(() => {
     setIsClient(true);
@@ -238,16 +290,12 @@ export default function FinanceApp() {
 
   const currentMessages = getFilteredMessages();
   
-  // Procesar datos para jerarquía
+  // Procesar datos para jerarquía infinita
   const hierarchyData = useMemo(() => processHierarchy(currentMessages), [currentMessages]);
 
   const totalIncome = currentMessages.filter(m => m.type === 'income').reduce((acc, m) => acc + (m.amount || 0), 0);
   const totalExpense = currentMessages.filter(m => m.type !== 'income').reduce((acc, m) => acc + (m.amount || 0), 0);
   const balance = totalIncome - totalExpense;
-
-  const toggleRow = (name) => {
-    setExpandedRows(prev => ({ ...prev, [name]: !prev[name] }));
-  };
 
   if (!isClient) return null;
 
@@ -279,6 +327,7 @@ export default function FinanceApp() {
         {activeTab === 'chat' && (
           <div className="p-4 pb-24 space-y-6">
             {messages.length === 0 && <div className="text-center py-10 opacity-50"><MessageSquare className="mx-auto mb-2"/>Esperando datos...</div>}
+            
             {messages.map((msg) => (
               <div key={msg.id} className={`flex flex-col ${msg.sender === 'Yo' ? 'items-end' : 'items-start'}`}>
                 <div className={`flex items-end gap-2 max-w-[90%] ${msg.sender === 'Yo' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -302,32 +351,34 @@ export default function FinanceApp() {
                       <div className="text-[9px] text-right text-slate-300 mt-1">{formatDateSafe(msg.createdAt)}</div>
                     </div>
                   </div>
-                  <button onClick={() => handleDelete(msg.id)} className="text-slate-300 hover:text-red-400"><Trash2 size={14}/></button>
+                  <button 
+                    onClick={() => handleDelete(msg.id)} 
+                    className="text-slate-300 hover:text-red-400 p-2"
+                    title="Eliminar este registro"
+                  >
+                    <Trash2 size={16}/>
+                  </button>
                 </div>
               </div>
             ))}
+            
             <div ref={messagesEndRef} />
           </div>
         )}
 
-        {/* EXPLORE TAB (NUEVO HTML BUBBLES) */}
+        {/* EXPLORE TAB (BUBBLES HTML) */}
         {activeTab === 'explore' && (
           <div className="p-4 space-y-6 pb-24">
              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-4">
                <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Network className="text-indigo-600" /> Mapa de Gastos</h2>
-               <p className="text-xs text-slate-500">Toca las burbujas para ver detalles.</p>
+               <p className="text-xs text-slate-500">Navega por tus categorías (Toca para entrar).</p>
              </div>
              
-             {/* Componente de Burbujas HTML */}
-             <BubbleExplorer 
-                data={hierarchyData} 
-                selectedCategory={selectedHierarchyNode}
-                onSelectCategory={setSelectedHierarchyNode}
-             />
+             <BubbleExplorer data={hierarchyData} />
           </div>
         )}
 
-        {/* STATS TAB (LISTA JERÁRQUICA) */}
+        {/* STATS TAB (LISTA RECURSIVA MEJORADA) */}
         {activeTab === 'stats' && (
           <div className="p-4 space-y-6 pb-24">
             
@@ -353,47 +404,12 @@ export default function FinanceApp() {
               </div>
             </div>
 
-            {/* LISTA JERÁRQUICA (Con sangría) */}
+            {/* LISTA JERÁRQUICA INFINITA */}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Filter size={18} /> Top Gastos</h3>
               <div className="space-y-1">
                 {hierarchyData.length > 0 ? hierarchyData.map((item) => (
-                  <div key={item.name} className="border-b border-slate-50 last:border-0">
-                    {/* Fila Padre */}
-                    <div 
-                      className="flex justify-between items-center py-3 cursor-pointer hover:bg-slate-50 transition-colors"
-                      onClick={() => toggleRow(item.name)}
-                    >
-                      <div className="flex items-center gap-2">
-                        {item.children.length > 0 ? (
-                          expandedRows[item.name] ? <ChevronDown size={16} className="text-slate-400"/> : <ChevronRight size={16} className="text-slate-400"/>
-                        ) : <div className="w-4"/>}
-                        
-                        <div>
-                          <span className="font-medium text-slate-700 text-sm block">{item.name}</span>
-                          <div className="w-24 h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
-                            <div className="h-full bg-indigo-500" style={{ width: `${Math.min((item.value / totalExpense) * 100, 100)}%` }}></div>
-                          </div>
-                        </div>
-                      </div>
-                      <span className="font-bold text-slate-800 text-sm">${item.value.toLocaleString()}</span>
-                    </div>
-
-                    {/* Fila Hijos (Sangría) */}
-                    {expandedRows[item.name] && item.children.length > 0 && (
-                      <div className="bg-slate-50/50 rounded-lg mb-2 overflow-hidden animate-in slide-in-from-top-2">
-                        {item.children.map((child, cIdx) => (
-                          <div key={cIdx} className="flex justify-between items-center py-2 px-3 pl-10 border-t border-white text-xs hover:bg-indigo-50/30">
-                            <div className="flex items-center gap-2 text-slate-500">
-                              <Layers size={12} className="opacity-50"/>
-                              <span>{child.name}</span>
-                            </div>
-                            <span className="font-mono text-slate-600">${child.value.toLocaleString()}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <HierarchyRow key={item.name} item={item} total={totalExpense} />
                 )) : <div className="text-center text-slate-400 py-4 text-sm">No hay gastos registrados</div>}
               </div>
             </div>
