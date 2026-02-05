@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
+// IMPORTANTE: Agregué 'updateDoc' para poder guardar las ediciones
 import { 
   getFirestore, collection, onSnapshot, 
-  query, orderBy, deleteDoc, doc, limit 
+  query, orderBy, deleteDoc, updateDoc, doc, limit 
 } from 'firebase/firestore';
 import { 
   getAuth, signInAnonymously, onAuthStateChanged 
@@ -14,7 +15,7 @@ import {
   PieChart as PieIcon, MessageSquare, 
   Tag, TrendingUp, TrendingDown, Filter, X, Wallet, 
   Zap, CloudLightning, Calendar as CalendarIcon, Network, Trash2,
-  ChevronRight, ChevronDown, Layers, Edit3, CornerDownRight, ArrowLeft, FolderOpen
+  ChevronRight, ChevronDown, Layers, Edit3, CornerDownRight, ArrowLeft, FolderOpen, Save
 } from 'lucide-react';
 
 // --- CREDENCIALES REALES ---
@@ -87,7 +88,7 @@ const processHierarchy = (messages) => {
   return convertToArray(root.children);
 };
 
-// --- EXPLORADOR DINÁMICO (Corrección Visual) ---
+// --- EXPLORADOR DINÁMICO ---
 const DynamicBubbleExplorer = ({ messages }) => {
   const [activeFilters, setActiveFilters] = useState([]); 
 
@@ -125,7 +126,6 @@ const DynamicBubbleExplorer = ({ messages }) => {
       <div className="h-[400px] bg-slate-900 rounded-3xl p-6 relative overflow-hidden flex flex-col items-center justify-center shadow-xl border border-slate-800">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-blue-900/30 via-slate-950 to-black"></div>
         
-        {/* NAVEGACIÓN: Solo aparece si hay filtros activos */}
         {activeFilters.length > 0 && (
           <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2 items-center animate-in fade-in slide-in-from-top-2">
             <button onClick={handleGoBack} className="bg-white/10 text-white p-1.5 rounded-full hover:bg-white/20 transition-colors">
@@ -141,7 +141,6 @@ const DynamicBubbleExplorer = ({ messages }) => {
           </div>
         )}
 
-        {/* Burbujas */}
         <div className="z-10 flex flex-wrap content-center justify-center gap-3 max-w-sm animate-in zoom-in duration-300">
           {nextLevelBubbles.length > 0 ? nextLevelBubbles.slice(0, 7).map((item, idx) => {
             const isTop = idx === 0;
@@ -267,6 +266,10 @@ export default function FinanceApp() {
   const messagesEndRef = useRef(null);
   const [dateFilter, setDateFilter] = useState({ start: '', end: '' });
   const [isClient, setIsClient] = useState(false);
+  
+  // ESTADOS PARA EDICIÓN MANUAL
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ amount: '', tags: '' });
 
   useEffect(() => {
     setIsClient(true);
@@ -295,6 +298,34 @@ export default function FinanceApp() {
   const handleDelete = async (id) => {
     if (!user) return;
     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances', id));
+  };
+
+  // --- FUNCIONES DE EDICIÓN MANUAL ---
+  const handleStartEdit = (msg) => {
+    setEditingId(msg.id);
+    // Convertir tags array a string para el input
+    setEditForm({ 
+      amount: msg.amount, 
+      tags: msg.tags ? msg.tags.join(', ') : '' 
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if(!user || !editingId) return;
+    
+    // Convertir string de vuelta a array limpio
+    const tagsArray = editForm.tags.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances', editingId), {
+        amount: Number(editForm.amount),
+        tags: tagsArray
+      });
+      setEditingId(null);
+    } catch (e) {
+      console.error("Error al guardar edición:", e);
+      alert("Error al guardar. Revisa la consola.");
+    }
   };
 
   const getFilteredMessages = () => {
@@ -350,34 +381,78 @@ export default function FinanceApp() {
             
             {messages.map((msg) => (
               <div key={msg.id} className={`flex flex-col ${msg.sender === 'Yo' ? 'items-end' : 'items-start'}`}>
-                <div className={`flex items-end gap-2 max-w-[90%] ${msg.sender === 'Yo' ? 'flex-row-reverse' : 'flex-row'}`}>
+                <div className={`flex items-end gap-2 max-w-[95%] ${msg.sender === 'Yo' ? 'flex-row-reverse' : 'flex-row'}`}>
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs text-white font-bold shadow-sm ${msg.sender === 'Yo' ? 'bg-indigo-500' : 'bg-pink-500'}`}>
                     {msg.sender === 'Yo' ? 'Y' : 'E'}
                   </div>
-                  <div className={`p-3 rounded-2xl shadow-sm border text-sm ${msg.sender === 'Yo' ? 'bg-white rounded-tr-none' : 'bg-white rounded-tl-none'}`}>
-                    <p className="mb-2 text-slate-600">"{msg.originalText}"</p>
-                    <div className="bg-slate-50 rounded-xl p-2 border border-slate-100 min-w-[180px]">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${msg.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-600'}`}>
-                          {msg.type === 'income' ? 'INGRESO' : 'GASTO'}
-                        </span>
-                        <span className="font-bold">${msg.amount?.toLocaleString()}</span>
+                  
+                  {/* BURBUJA DE MENSAJE O FORMULARIO DE EDICIÓN */}
+                  <div className={`p-3 rounded-2xl shadow-sm border text-sm w-full ${msg.sender === 'Yo' ? 'bg-white rounded-tr-none' : 'bg-white rounded-tl-none'}`}>
+                    
+                    {editingId === msg.id ? (
+                      // --- MODO EDICIÓN ---
+                      <div className="flex flex-col gap-2">
+                        <label className="text-xs font-bold text-slate-400 uppercase">Monto</label>
+                        <input 
+                          type="number" 
+                          value={editForm.amount} 
+                          onChange={(e) => setEditForm({...editForm, amount: e.target.value})}
+                          className="border rounded p-1 text-slate-800 font-mono bg-slate-50"
+                        />
+                        <label className="text-xs font-bold text-slate-400 uppercase">Etiquetas (separar con comas)</label>
+                        <input 
+                          type="text" 
+                          value={editForm.tags} 
+                          onChange={(e) => setEditForm({...editForm, tags: e.target.value})}
+                          className="border rounded p-1 text-slate-800 bg-slate-50 text-xs"
+                          placeholder="Ej: Hogar, Mercado, Makro"
+                        />
+                        <div className="flex gap-2 mt-2 justify-end">
+                          <button onClick={() => setEditingId(null)} className="px-3 py-1 rounded bg-slate-100 text-slate-500 text-xs">Cancelar</button>
+                          <button onClick={handleSaveEdit} className="px-3 py-1 rounded bg-indigo-600 text-white text-xs flex items-center gap-1"><Save size={12}/> Guardar</button>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-1">
-                        {Array.isArray(msg.tags) && msg.tags.map((t, i) => (
-                          <span key={i} className="text-[9px] bg-white border px-1 rounded text-slate-500">{t}</span>
-                        ))}
-                      </div>
-                      <div className="text-[9px] text-right text-slate-300 mt-1">{formatDateSafe(msg.createdAt)}</div>
-                    </div>
+                    ) : (
+                      // --- MODO VISUALIZACIÓN ---
+                      <>
+                        <p className="mb-2 text-slate-600 italic">"{msg.originalText}"</p>
+                        <div className="bg-slate-50 rounded-xl p-2 border border-slate-100">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${msg.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                              {msg.type === 'income' ? 'INGRESO' : 'GASTO'}
+                            </span>
+                            <span className="font-bold">${msg.amount?.toLocaleString()}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {Array.isArray(msg.tags) && msg.tags.map((t, i) => (
+                              <span key={i} className="text-[9px] bg-white border px-1 rounded text-slate-500">{t}</span>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-right text-slate-300 mt-1">{formatDateSafe(msg.createdAt)}</div>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <button 
-                    onClick={() => handleDelete(msg.id)} 
-                    className="text-slate-300 hover:text-red-400 p-2"
-                    title="Eliminar este registro"
-                  >
-                    <Trash2 size={16}/>
-                  </button>
+
+                  {/* BOTONES DE ACCIÓN (SOLO SI NO SE ESTÁ EDITANDO) */}
+                  {editingId !== msg.id && (
+                    <div className="flex flex-col gap-1">
+                      <button 
+                        onClick={() => handleStartEdit(msg)} 
+                        className="text-slate-300 hover:text-indigo-500 p-1 bg-white rounded-full shadow-sm border border-slate-100"
+                        title="Editar etiquetas manualmente"
+                      >
+                        <Edit3 size={14}/>
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(msg.id)} 
+                        className="text-slate-300 hover:text-red-400 p-1 bg-white rounded-full shadow-sm border border-slate-100"
+                        title="Eliminar este registro"
+                      >
+                        <Trash2 size={14}/>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -435,6 +510,7 @@ export default function FinanceApp() {
         )}
       </main>
 
+      {/* NAV */}
       <nav className="bg-white border-t border-slate-100 flex justify-around p-1 z-30 pb-safe">
         <button onClick={() => setActiveTab('chat')} className={`p-3 rounded-xl transition-all ${activeTab === 'chat' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><MessageSquare size={24} /></button>
         <button onClick={() => setActiveTab('explore')} className={`p-3 rounded-xl transition-all ${activeTab === 'explore' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><Network size={24} /></button>
