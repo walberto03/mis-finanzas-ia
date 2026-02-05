@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-// IMPORTANTE: Agregamos getApps y getApp para la corrección
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getFirestore, collection, onSnapshot, 
   query, orderBy, deleteDoc, doc, limit 
 } from 'firebase/firestore';
 import { 
-  getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+  getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend
@@ -17,9 +16,7 @@ import {
   Zap, CloudLightning, Calendar as CalendarIcon, Network
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
-
-// 1. REEMPLAZA ESTO CON TUS DATOS REALES DE FIREBASE
+// --- TUS CREDENCIALES REALES (YA CONFIGURADAS) ---
 const firebaseConfig = {
   apiKey: "AIzaSyD4oU6BxzgRuP8wj4aQAvUtcDpvMSR2mMQ",
   authDomain: "finanzas-familiares-7f59a.firebaseapp.com",
@@ -30,14 +27,12 @@ const firebaseConfig = {
   measurementId: "G-8X8KFTCKM0"
 };
 
-// 2. ID DE LA APP
-const appId = process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia';
+// --- NOMBRE DE TU COLECCIÓN EN FIREBASE ---
+const appId = 'Finanzas_familia';
 
-// --- CORRECCIÓN DEL ERROR DE BUILD ---
-// Verificamos de forma segura si ya existe una instancia de Firebase
-// para evitar el error "reading length of undefined".
+// --- INICIALIZACIÓN SEGURA ---
 let app;
-if (getApps && getApps().length > 0) {
+if (getApps().length > 0) {
   app = getApp();
 } else {
   app = initializeApp(firebaseConfig);
@@ -76,7 +71,6 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
         .sort((a, b) => b.value - a.value)
         .slice(0, 7);
 
-      // Guard para evitar errores si no hay nodos
       maxVal = sortedNodes.length > 0 ? Math.max(...sortedNodes.map(n => n.value)) : 0;
 
       sortedNodes.forEach((n, i) => {
@@ -225,7 +219,6 @@ export default function FinanceApp() {
 
   // --- AUTENTICACIÓN ---
   useEffect(() => {
-    // En Vercel no necesitamos initAuth especial, signInAnonymously es suficiente para empezar
     const initAuth = async () => {
         try {
             await signInAnonymously(auth);
@@ -242,7 +235,7 @@ export default function FinanceApp() {
   useEffect(() => {
     if (!user) return;
     
-    // Escuchar la colección correcta usando el appId configurado
+    // Escuchar la colección correcta
     const q = query(
       collection(db, 'artifacts', appId, 'public', 'data', 'consolidated_finances'),
       orderBy('createdAt', 'desc'), 
