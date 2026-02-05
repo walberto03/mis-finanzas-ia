@@ -2,7 +2,7 @@ import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import Groq from 'groq-sdk';
 
-// Función auxiliar para responder a Telegram pase lo que pase
+// Función auxiliar para responder a Telegram
 async function sendTelegramReply(token, chatId, text) {
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -19,31 +19,25 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).send('Solo POST');
   
   const message = req.body.message || req.body.edited_message;
-  // Si es solo un ping de Telegram sin mensaje de texto, retornamos OK
   if (!message) return res.status(200).send('OK');
 
   const chatId = message.chat.id;
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
   try {
-    // 1. Verificar Variables Críticas
-    if (!token) throw new Error("Falta TELEGRAM_BOT_TOKEN en Vercel");
-    if (!process.env.GROQ_API_KEY) throw new Error("Falta GROQ_API_KEY en Vercel");
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT) throw new Error("Falta FIREBASE_SERVICE_ACCOUNT en Vercel");
-
-    // 2. Inicializar Firebase (Punto crítico de fallos JSON)
+    // 1. Inicializar Firebase
     if (getApps().length === 0) {
       try {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         initializeApp({ credential: cert(serviceAccount) });
       } catch (jsonError) {
-        await sendTelegramReply(token, chatId, "🚨 Error Crítico: Tu variable FIREBASE_SERVICE_ACCOUNT en Vercel tiene un error de formato (JSON inválido). Revisa que no falten llaves { } o comillas.");
+        await sendTelegramReply(token, chatId, "🚨 Error JSON en Vercel. Revisa FIREBASE_SERVICE_ACCOUNT.");
         return res.status(500).send('Invalid JSON');
       }
     }
     const db = getFirestore();
 
-    // 3. Verificar Identidad
+    // 2. Verificar Identidad
     const userId = message.from.id.toString();
     const ALLOWED_USERS = {
       [process.env.TELEGRAM_ID_HUSBAND]: 'Yo',
@@ -53,31 +47,40 @@ export default async function handler(req, res) {
     const senderName = ALLOWED_USERS[userId];
 
     if (!senderName) {
-      // MODO DEBUG: Avisar al usuario cuál es su ID para que lo corrija
-      await sendTelegramReply(token, chatId, `⚠️ Acceso Denegado.\nTu ID real es: ${userId}\nEn Vercel pusiste: ${process.env.TELEGRAM_ID_HUSBAND} y ${process.env.TELEGRAM_ID_WIFE}`);
+      await sendTelegramReply(token, chatId, `⚠️ Acceso Denegado.\nTu ID real es: ${userId}`);
       return res.status(200).send('Unauthorized');
     }
 
-    // 4. Procesar con IA
-    await sendTelegramReply(token, chatId, "⏳ Procesando..."); // Feedback inmediato
+    // 3. Procesar con IA (MODELO ACTUALIZADO)
+    // Usamos el mensaje de "Escribiendo..." nativo de Telegram para que se vea más fluido
+    await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+      method: 'POST',
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+      headers: { 'Content-Type': 'application/json' }
+    });
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const prompt = `
       Analiza: "${message.text}"
       Contexto: Finanzas personales Colombia.
-      Salida JSON: { "amount": number, "type": "expense"|"income"|"debt_payment", "tags": string[] }
+      Reglas:
+      - amount: Numero puro (ej: 20000).
+      - type: 'expense' (gasto), 'income' (ingreso), 'debt_payment' (pago deuda).
+      - tags: Array de strings cortos (ej: ["Finca", "Cerdos"]).
+      Salida JSON: { "amount": number, "type": string, "tags": string[] }
     `;
 
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama3-8b-8192",
+      // CAMBIO IMPORTANTE: Usamos el modelo más nuevo y estable
+      model: "llama-3.3-70b-versatile",
       temperature: 0.1,
       response_format: { type: "json_object" }
     });
 
     const analysis = JSON.parse(completion.choices[0].message.content);
 
-    // 5. Guardar en Firestore
+    // 4. Guardar en Firestore
     await db.collection('artifacts')
             .doc(process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia')
             .collection('public')
@@ -100,7 +103,7 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error(error);
     if (token && chatId) {
-      await sendTelegramReply(token, chatId, `🔥 Error del Sistema: ${error.message}`);
+      await sendTelegramReply(token, chatId, `🔥 Error: ${error.message}`);
     }
     return res.status(500).send(error.message);
   }
