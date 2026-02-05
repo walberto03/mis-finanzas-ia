@@ -10,7 +10,6 @@ import {
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend
 } from 'recharts';
-// CORRECCIÓN: Agregado Trash2 a los imports
 import { 
   PieChart as PieIcon, MessageSquare, 
   Tag, TrendingUp, TrendingDown, Filter, X, Wallet, 
@@ -56,7 +55,7 @@ const formatCompactCurrency = (value) => {
   return `$${value}`;
 };
 
-// --- COMPONENTE DE RED ---
+// --- COMPONENTE DE RED (MEJORADO) ---
 const NetworkExplorer = ({ messages = [], onSelectTag }) => {
   const [centerTag, setCenterTag] = useState(null);
   
@@ -66,10 +65,10 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
 
     if (!messages || messages.length === 0) return { nodes: [], links: [], maxValue: 0 };
 
-    // Filtrar mensajes inválidos antes de procesar
     const validMessages = messages.filter(m => m.amount && Array.isArray(m.tags));
 
     if (!centerTag) {
+      // VISTA GLOBAL
       validMessages.forEach(msg => {
         if (msg.type === 'income') return;
         msg.tags.forEach(tag => {
@@ -93,14 +92,13 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
       return { nodes: sortedNodes, links: [], maxValue: maxVal };
 
     } else {
+      // VISTA DETALLADA
       let centerValue = 0;
       const relatedMap = {};
 
       validMessages.forEach(msg => {
         if (!msg.tags.includes(centerTag)) return;
-        
         centerValue += msg.amount;
-
         msg.tags.forEach(t => {
           if (t === centerTag) return; 
           if (!relatedMap[t]) relatedMap[t] = 0;
@@ -138,8 +136,8 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
       
       {centerTag && (
         <button 
-          onClick={() => setCenterTag(null)}
-          className="absolute top-4 left-4 bg-white/10 hover:bg-white/20 text-indigo-100 px-4 py-1.5 rounded-full text-xs backdrop-blur-md z-20 flex items-center gap-2 transition-all border border-white/10"
+          onClick={() => { setCenterTag(null); onSelectTag(null); }}
+          className="absolute top-4 left-4 bg-white/10 hover:bg-white/20 text-indigo-100 px-4 py-1.5 rounded-full text-xs backdrop-blur-md z-20 flex items-center gap-2 transition-all border border-white/10 cursor-pointer"
         >
           <X size={14} /> Volver
         </button>
@@ -166,54 +164,69 @@ const NetworkExplorer = ({ messages = [], onSelectTag }) => {
         </defs>
 
         {links.map((link, i) => (
-          <g key={`link-${i}`}>
-             <line 
-              x1={link.source.x} y1={link.source.y}
-              x2={link.target.x} y2={link.target.y}
-              stroke="url(#grad-line)" strokeWidth="0.5" strokeOpacity="0.4"
-             />
-             <line 
-              x1={link.source.x} y1={link.source.y}
-              x2={link.target.x} y2={link.target.y}
-              stroke="white" strokeWidth="0.1" strokeOpacity="0.2" strokeDasharray="2" className="animate-pulse"
-             />
-          </g>
+          <line 
+            key={`link-${i}`}
+            x1={link.source.x} y1={link.source.y}
+            x2={link.target.x} y2={link.target.y}
+            stroke="white" strokeWidth="0.2" strokeOpacity="0.2" strokeDasharray="2"
+          />
         ))}
 
         {nodes.map((node) => {
           const sizeRatio = maxValue > 0 ? node.value / maxValue : 0;
-          const radius = node.type === 'center' ? 14 : 6 + (sizeRatio * 8);
+          const radius = node.type === 'center' ? 14 : 7 + (sizeRatio * 8);
           const fillId = node.type === 'center' ? 'url(#grad-center)' : node.type === 'main' ? 'url(#grad-main)' : 'url(#grad-sat)';
 
           return (
             <g 
               key={node.id} 
-              onClick={() => { setCenterTag(node.id); onSelectTag(node.id); }}
-              className="cursor-pointer transition-all duration-300 hover:opacity-90"
-              style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+              // ANIMACIÓN CSS: Usamos transform en estilo para movimiento suave
+              style={{ 
+                transition: 'all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                transformBox: 'view-box', // Importante para SVG
+                transform: `translate(${node.x - 50}px, ${node.y - 50}px)`, // Truco para centrar el movimiento relativo
+                transformOrigin: '50px 50px' 
+              }}
             >
-              <circle cx={node.x} cy={node.y + radius * 0.3} r={radius} fill="black" opacity="0.3" filter="url(#glow)" />
-              <circle cx={node.x} cy={node.y} r={radius} fill={fillId} stroke="white" strokeWidth="0.3" strokeOpacity="0.3" />
-              <text 
-                x={node.x} y={node.y - (radius * 0.2)} textAnchor="middle" fill="white" 
-                fontSize={Math.max(2.5, radius * 0.35)} fontWeight="bold" className="drop-shadow-md pointer-events-none"
-              >
-                {node.id.length > 10 ? node.id.substring(0,9)+'..' : node.id}
-              </text>
-              <text 
-                x={node.x} y={node.y + (radius * 0.5)} textAnchor="middle" fill="rgba(255,255,255,0.9)" 
-                fontSize={Math.max(2, radius * 0.3)} fontWeight="500" className="pointer-events-none"
-              >
-                {formatCompactCurrency(node.value)}
-              </text>
+              {/* Grupo interno movido al centro para usar coordenadas relativas */}
+              <g transform="translate(50, 50)">
+                <circle 
+                  r={radius} 
+                  fill={fillId} 
+                  stroke="white" strokeWidth="0.5" strokeOpacity="0.5"
+                  className="cursor-pointer hover:opacity-80"
+                  onClick={(e) => { 
+                    e.stopPropagation();
+                    const newTag = node.id === centerTag ? null : node.id;
+                    setCenterTag(newTag); 
+                    onSelectTag(newTag);
+                  }}
+                />
+                
+                {/* Texto NO intercepta clics */}
+                <text 
+                  y={-radius * 0.2} textAnchor="middle" fill="white" 
+                  fontSize={Math.max(2.5, radius * 0.35)} fontWeight="bold" 
+                  className="pointer-events-none drop-shadow-md"
+                >
+                  {node.id.length > 9 ? node.id.substring(0,8)+'..' : node.id}
+                </text>
+                <text 
+                  y={radius * 0.5} textAnchor="middle" fill="rgba(255,255,255,0.9)" 
+                  fontSize={Math.max(2, radius * 0.3)} fontWeight="500" 
+                  className="pointer-events-none"
+                >
+                  {formatCompactCurrency(node.value)}
+                </text>
+              </g>
             </g>
           );
         })}
       </svg>
 
       {!centerTag && (
-        <div className="absolute bottom-6 text-indigo-200 text-xs bg-indigo-900/50 px-4 py-1 rounded-full backdrop-blur-sm border border-indigo-500/30">
-          Toca una burbuja para ver detalles
+        <div className="absolute bottom-6 text-indigo-200 text-xs bg-indigo-900/50 px-4 py-1 rounded-full backdrop-blur-sm border border-indigo-500/30 pointer-events-none">
+          Toca una esfera para explorar
         </div>
       )}
     </div>
@@ -298,7 +311,6 @@ export default function FinanceApp() {
         totalIncome += msg.amount;
       } else {
         totalExpense += msg.amount;
-        // Validación extra para evitar errores
         if (msg.tags && Array.isArray(msg.tags)) {
           msg.tags.forEach(tag => {
             if (!tagMap[tag]) tagMap[tag] = 0;
@@ -373,7 +385,6 @@ export default function FinanceApp() {
                         <span className="font-bold text-slate-800 text-lg">${msg.amount?.toLocaleString()}</span>
                       </div>
                       <div className="flex flex-wrap gap-1">
-                        {/* VALIDACIÓN DE ARRAY: Evita la pantalla negra */}
                         {Array.isArray(msg.tags) ? msg.tags.map((tag, idx) => (
                           <span key={idx} className="text-[10px] bg-white border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded-md flex items-center gap-1"><Tag size={10} /> {tag}</span>
                         )) : <span className="text-xs text-red-300">Sin etiquetas</span>}
@@ -383,7 +394,6 @@ export default function FinanceApp() {
                            <Zap size={8} /> IA
                          </span>
                          <span className="text-[9px] text-slate-400">
-                           {/* VALIDACIÓN DE FECHA: Evita errores si falta createdAt */}
                            {formatDateSafe(msg.createdAt)}
                          </span>
                       </div>
