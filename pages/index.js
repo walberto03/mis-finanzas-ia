@@ -10,10 +10,11 @@ import {
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend
 } from 'recharts';
+// CORRECCIÓN: Agregado Trash2 a los imports
 import { 
   PieChart as PieIcon, MessageSquare, 
   Tag, TrendingUp, TrendingDown, Filter, X, Wallet, 
-  Zap, CloudLightning, Calendar as CalendarIcon, Network
+  Zap, CloudLightning, Calendar as CalendarIcon, Network, Trash2
 } from 'lucide-react';
 
 // --- CREDENCIALES REALES ---
