@@ -3,18 +3,22 @@ import { getFirestore } from 'firebase-admin/firestore';
 import Groq from 'groq-sdk';
 
 // Función auxiliar para responder a Telegram
+// AHORA RETORNA EL ID DEL MENSAJE ENVIADO PARA GUARDARLO
 async function sendTelegramReply(token, chatId, text, replyToId = null) {
   try {
     const payload = { chat_id: chatId, text: text, parse_mode: 'Markdown' };
     if (replyToId) payload.reply_to_message_id = replyToId;
     
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    const data = await response.json();
+    return data.result?.message_id; // Retornamos el ID
   } catch (e) {
     console.error("Error enviando respuesta a Telegram", e);
+    return null;
   }
 }
 
@@ -64,47 +68,58 @@ export default async function handler(req, res) {
     const APP_COLLECTION = process.env.NEXT_PUBLIC_APP_ID || 'Finanzas_familia';
 
     // ---------------------------------------------------------
-    // DEFINICIÓN DEL PROMPT MAESTRO (Usado en Nuevo, Edición y Corrección)
+    // PROMPT MAESTRO
     // ---------------------------------------------------------
     const generatePrompt = (text, isCorrection = false) => `
       Eres un contador experto analizando: "${text}"
-      ${isCorrection ? 'ESTO ES UNA CORRECCIÓN DEL USUARIO. TUS REGLAS ANTERIORES NO IMPORTAN TANTO COMO LA INTENCIÓN ACTUAL.' : ''}
+      ${isCorrection ? 'ESTO ES UNA CORRECCIÓN. IGNORA CLASIFICACIONES PREVIAS SI CONTRADICEN ESTA.' : ''}
 
-      --- REGLAS DE ORO (PRIORIDAD ALTA) ---
-      1. SI EL TEXTO DICE "INGRESO", "RECIBÍ", "COBRÉ", "ENTRÓ": Clasifica SIEMPRE como 'income'.
-      2. SI EL TEXTO DICE "GASTO", "PAGUÉ", "SALIDA", "COMPRA": Clasifica SIEMPRE como 'expense'.
-      3. "Arriendo": Si no especifica, asume 'expense'. PERO si dice "cobro arriendo" o "ingreso arriendo", es 'income'.
-
-      --- CLASIFICACIÓN ('type') ---
-      - 'income': Entradas de dinero.
-      - 'expense': Salidas de dinero.
-      - 'debt_payment': Abonos a deudas (Tarjetas, créditos).
+      --- REGLAS PRIORITARIAS ---
+      1. "INGRESO", "RECIBÍ", "COBRÉ": Clasifica como 'income'.
+      2. "GASTO", "PAGUÉ", "SALIDA", "COMPRA": Clasifica como 'expense'.
+      3. "Arriendo": Si no se especifica, 'expense'. Si dice "cobro", 'income'.
 
       --- ETIQUETAS ('tags') [Macro, Sub, Detalle] ---
       Usa la lista oficial de Macros:
       [Hogar, Transporte, Alimentación, Iglesia, Finca, Salud, Educación, Ocio, Deudas, Inversión, Ingresos]
 
       Ejemplos:
-      - "Iglesia compra aseo" -> ["Iglesia", "Aseo", "Compra"] (La entidad 'Iglesia' manda sobre 'Hogar').
-      - "Gasolina carro sofi" -> ["Transporte", "Gasolina", "Sofi"].
-      - "Arriendo local 3" (si es ingreso) -> ["Ingresos", "Arriendo", "Local 3"].
+      - "Iglesia compra aseo" -> ["Iglesia", "Aseo", "Compra"]
+      - "Gasolina carro sofi" -> ["Transporte", "Gasolina", "Sofi"]
 
       Salida JSON: { "amount": number, "type": "income"|"expense"|"debt_payment", "tags": string[] }
     `;
 
     // ==========================================
-    // CASO 1: CORRECCIÓN POR RESPUESTA (REPLY)
+    // CASO 1: RESPUESTA (REPLY) -> CORREGIR O BORRAR
     // ==========================================
     if (message.reply_to_message) {
-      const originalMsgId = message.reply_to_message.message_id;
-      const snapshot = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances').where('telegram_message_id', '==', originalMsgId).get();
+      const targetId = message.reply_to_message.message_id;
+      
+      // INTENTO 1: Buscar por ID del mensaje original del usuario
+      let snapshot = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances')
+        .where('telegram_message_id', '==', targetId).get();
+
+      // INTENTO 2: Buscar por ID de la respuesta del bot (Si el usuario respondió al bot)
+      if (snapshot.empty) {
+         snapshot = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances')
+        .where('bot_reply_id', '==', targetId).get();
+      }
 
       if (!snapshot.empty) {
         const docRef = snapshot.docs[0].ref;
-        const originalData = snapshot.docs[0].data();
         
-        // Combinamos el texto original con la corrección para darle contexto total a la IA
-        const combinedText = `Texto Original: "${originalData.originalText}". Corrección del usuario: "${message.text}"`;
+        // --- SUB-CASO: ELIMINAR ---
+        const textLower = message.text.toLowerCase().trim();
+        if (['borrar', 'eliminar', 'quitar', 'delete', 'borralo'].includes(textLower)) {
+           await docRef.delete();
+           await sendTelegramReply(token, chatId, `🗑️ *REGISTRO ELIMINADO*`, message.message_id);
+           return res.status(200).json({ success: true });
+        }
+
+        // --- SUB-CASO: CORREGIR ---
+        const originalData = snapshot.docs[0].data();
+        const combinedText = `Texto Original: "${originalData.originalText}". Corrección: "${message.text}"`;
         
         const completion = await groq.chat.completions.create({
           messages: [{ role: "user", content: generatePrompt(combinedText, true) }],
@@ -126,14 +141,48 @@ export default async function handler(req, res) {
         const typeLabel = updatedAnalysis.type === 'income' ? 'INGRESO 🤑' : 'GASTO 💸';
         await sendTelegramReply(token, chatId, `🔄 *CORREGIDO A ${typeLabel}*\n\n💰 $${updatedAnalysis.amount.toLocaleString()}\n📂 ${updatedAnalysis.tags.join(' > ')}`, message.message_id);
         return res.status(200).json({ success: true });
+      } else {
+        // Si no se encuentra nada
+        // Evitamos responder si el usuario está hablando con otra persona respondiendo mensajes viejos
+        // Pero si es reciente, avisamos.
+        await sendTelegramReply(token, chatId, `⚠️ No encontré el registro para corregir.\nIntenta responder al mensaje del Bot de confirmación.`, message.message_id);
+        return res.status(200).send('Target not found');
       }
     }
 
     // ==========================================
-    // CASO 2 & 3: EDICIÓN O NUEVO MENSAJE
+    // CASO 2: EDICIÓN DE MENSAJE (EDIT)
     // ==========================================
-    
-    // Analizar con el Prompt Maestro
+    if (req.body.edited_message) {
+       const snapshot = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances').where('telegram_message_id', '==', message.message_id).get();
+
+       if (!snapshot.empty) {
+         // Re-analizar texto editado
+         const editCompletion = await groq.chat.completions.create({
+            messages: [{ role: "user", content: generatePrompt(message.text, false) }],
+            model: "llama-3.3-70b-versatile",
+            response_format: { type: "json_object" }
+         });
+         const editAnalysis = JSON.parse(editCompletion.choices[0].message.content);
+
+         await snapshot.docs[0].ref.update({
+            originalText: message.text,
+            amount: editAnalysis.amount,
+            type: editAnalysis.type,
+            tags: editAnalysis.tags,
+            updatedAt: new Date()
+         });
+         
+         const typeLabel = editAnalysis.type === 'income' ? 'INGRESO 🤑' : 'GASTO 💸';
+         await sendTelegramReply(token, chatId, `✏️ *EDITADO A ${typeLabel}*\n\n💰 $${editAnalysis.amount.toLocaleString()}\n📂 ${editAnalysis.tags.join(' > ')}`, message.message_id);
+         return res.status(200).json({ success: true });
+       }
+       return res.status(200).send('Edit target not found');
+    }
+
+    // ==========================================
+    // CASO 3: NUEVO MENSAJE
+    // ==========================================
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: generatePrompt(message.text, false) }],
       model: "llama-3.3-70b-versatile",
@@ -143,28 +192,8 @@ export default async function handler(req, res) {
 
     const analysis = JSON.parse(completion.choices[0].message.content);
 
-    // Lógica de Guardado/Actualización
-    if (req.body.edited_message) {
-       const snapshot = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances').where('telegram_message_id', '==', message.message_id).get();
-
-       if (!snapshot.empty) {
-         await snapshot.docs[0].ref.update({
-            originalText: message.text,
-            amount: analysis.amount,
-            type: analysis.type,
-            tags: analysis.tags,
-            updatedAt: new Date()
-         });
-         const typeLabel = analysis.type === 'income' ? 'INGRESO 🤑' : 'GASTO 💸';
-         await sendTelegramReply(token, chatId, `✏️ *EDITADO A ${typeLabel}*\n\n💰 $${analysis.amount.toLocaleString()}\n📂 ${analysis.tags.join(' > ')}`, message.message_id);
-         return res.status(200).json({ success: true });
-       }
-       // Si no encuentra el original en edición, no hace nada para evitar duplicados molestos
-       return res.status(200).send('Edit target not found');
-    }
-
-    // Nuevo Registro
-    await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances').add({
+    // Guardamos el documento PRIMERO para tener la referencia
+    const docRef = await db.collection('artifacts').doc(APP_COLLECTION).collection('public').doc('data').collection('consolidated_finances').add({
       originalText: message.text,
       amount: analysis.amount,
       type: analysis.type,
@@ -176,7 +205,15 @@ export default async function handler(req, res) {
     });
 
     let typeLabel = analysis.type === 'income' ? "INGRESO 🤑" : (analysis.type === 'debt_payment' ? "ABONO 💳" : "GASTO 💸");
-    await sendTelegramReply(token, chatId, `✅ *${typeLabel} REGISTRADO*\n\n💰 $${analysis.amount.toLocaleString()}\n📂 ${analysis.tags.join(' > ')}`, message.message_id);
+    
+    // Enviamos respuesta y CAPTURAMOS su ID
+    const botReplyId = await sendTelegramReply(token, chatId, `✅ *${typeLabel} REGISTRADO*\n\n💰 $${analysis.amount.toLocaleString()}\n📂 ${analysis.tags.join(' > ')}\n\n_💡 Tips:\n✏️ Edita para corregir.\n↩️ Responde "Borrar" a este mensaje para eliminar._`, message.message_id);
+    
+    // Actualizamos el documento con el ID de la respuesta del bot
+    // Esto permite que si el usuario responde a ESTE mensaje del bot, podamos encontrar el registro.
+    if (botReplyId) {
+        await docRef.update({ bot_reply_id: botReplyId });
+    }
     
     return res.status(200).json({ success: true });
 
