@@ -41,7 +41,7 @@ if (getApps().length > 0) {
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Helper para fechas
+// Helpers
 const formatDateSafe = (createdAt) => {
   if (!createdAt || !createdAt.seconds) return '';
   try {
@@ -56,8 +56,7 @@ const formatCompactCurrency = (value) => {
   return `$${(value / 1000).toFixed(0)}k`;
 };
 
-// --- LÓGICA DE JERARQUÍA (Para pestaña Stats) ---
-// Organiza por frecuencia global (El tag más común es el padre)
+// --- LÓGICA DE JERARQUÍA (Stats) ---
 const processHierarchy = (messages) => {
   const tagCounts = {};
   messages.forEach(msg => {
@@ -69,7 +68,6 @@ const processHierarchy = (messages) => {
 
   messages.forEach(msg => {
     if (msg.type === 'income' || !msg.tags || msg.tags.length === 0) return;
-    // Ordenar tags del mensaje: Más frecuente -> Menos frecuente
     const sortedTags = [...new Set(msg.tags)].sort((a, b) => (tagCounts[b] || 0) - (tagCounts[a] || 0));
     
     let currentNode = root;
@@ -89,11 +87,10 @@ const processHierarchy = (messages) => {
   return convertToArray(root.children);
 };
 
-// --- COMPONENTE EXPLORADOR MULTIDIMENSIONAL (Carpetas Dinámicas) ---
+// --- EXPLORADOR DINÁMICO (Corrección Visual) ---
 const DynamicBubbleExplorer = ({ messages }) => {
-  const [activeFilters, setActiveFilters] = useState([]); // Historial de tags seleccionados
+  const [activeFilters, setActiveFilters] = useState([]); 
 
-  // 1. Filtrar mensajes que coinciden con TODAS las etiquetas seleccionadas
   const filteredMessages = useMemo(() => {
     if (activeFilters.length === 0) return messages.filter(m => m.type !== 'income');
     return messages.filter(msg => {
@@ -102,73 +99,51 @@ const DynamicBubbleExplorer = ({ messages }) => {
     });
   }, [messages, activeFilters]);
 
-  // 2. Calcular qué etiquetas (burbujas) mostrar basadas en los mensajes filtrados
   const nextLevelBubbles = useMemo(() => {
     const tagMap = {};
-    
     filteredMessages.forEach(msg => {
-      // Solo mirar tags que NO están ya seleccionados
       const remainingTags = msg.tags.filter(t => !activeFilters.includes(t));
-      
       remainingTags.forEach(tag => {
         if (!tagMap[tag]) tagMap[tag] = { name: tag, value: 0, count: 0 };
         tagMap[tag].value += msg.amount;
         tagMap[tag].count += 1;
       });
     });
-
     return Object.values(tagMap).sort((a, b) => b.value - a.value);
   }, [filteredMessages, activeFilters]);
 
-  // Total en el nivel actual
   const currentTotal = filteredMessages.reduce((sum, m) => sum + (m.amount || 0), 0);
 
-  const handleSelectTag = (tag) => {
-    setActiveFilters([...activeFilters, tag]);
-  };
-
-  const handleGoBack = () => {
-    setActiveFilters(activeFilters.slice(0, -1));
-  };
-
-  const handleReset = () => {
-    setActiveFilters([]);
-  };
+  const handleSelectTag = (tag) => setActiveFilters([...activeFilters, tag]);
+  const handleGoBack = () => setActiveFilters(activeFilters.slice(0, -1));
+  const handleReset = () => setActiveFilters([]);
 
   if (!messages || messages.length === 0) return <div className="text-center text-slate-400 p-10">Sin datos</div>;
 
   return (
     <div className="flex flex-col gap-4">
-      {/* AREA VISUAL DE BURBUJAS */}
       <div className="h-[400px] bg-slate-900 rounded-3xl p-6 relative overflow-hidden flex flex-col items-center justify-center shadow-xl border border-slate-800">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-blue-900/30 via-slate-950 to-black"></div>
         
-        {/* Barra de Navegación (Breadcrumbs) */}
-        <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2 items-center">
-          {activeFilters.length > 0 ? (
-            <>
-              <button onClick={handleGoBack} className="bg-white/10 text-white p-1.5 rounded-full hover:bg-white/20 transition-colors">
-                <ArrowLeft size={16} />
-              </button>
-              <div className="flex gap-1 overflow-x-auto max-w-[200px] no-scrollbar">
-                {activeFilters.map((tag, idx) => (
-                  <span key={tag} className="text-xs bg-indigo-600/80 text-white px-2 py-1 rounded-md whitespace-nowrap border border-indigo-400/30 flex items-center gap-1">
-                    {tag} <span className="opacity-50 text-[8px]">▶</span>
-                  </span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <span className="text-xs text-slate-500 font-medium px-2 uppercase tracking-widest flex items-center gap-2">
-              <FolderOpen size={14}/> Todas las categorías
-            </span>
-          )}
-        </div>
+        {/* NAVEGACIÓN: Solo aparece si hay filtros activos */}
+        {activeFilters.length > 0 && (
+          <div className="absolute top-4 left-4 z-20 flex flex-wrap gap-2 items-center animate-in fade-in slide-in-from-top-2">
+            <button onClick={handleGoBack} className="bg-white/10 text-white p-1.5 rounded-full hover:bg-white/20 transition-colors">
+              <ArrowLeft size={16} />
+            </button>
+            <div className="flex gap-1 overflow-x-auto max-w-[200px] no-scrollbar">
+              {activeFilters.map((tag) => (
+                <span key={tag} className="text-xs bg-indigo-600/80 text-white px-2 py-1 rounded-md whitespace-nowrap border border-indigo-400/30 flex items-center gap-1">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
-        {/* Burbujas Dinámicas */}
+        {/* Burbujas */}
         <div className="z-10 flex flex-wrap content-center justify-center gap-3 max-w-sm animate-in zoom-in duration-300">
           {nextLevelBubbles.length > 0 ? nextLevelBubbles.slice(0, 7).map((item, idx) => {
-            // Estilos dinámicos
             const isTop = idx === 0;
             const sizeClasses = isTop ? "w-28 h-28 text-base" : "w-20 h-20 text-xs";
             const bgClasses = isTop 
@@ -195,22 +170,20 @@ const DynamicBubbleExplorer = ({ messages }) => {
           )}
         </div>
 
-        {/* Pie de Info */}
         <div className="absolute bottom-4 w-full text-center pointer-events-none">
-          <p className="text-slate-400 text-xs">Total en esta vista</p>
+          <p className="text-slate-400 text-xs">{activeFilters.length === 0 ? 'Total Global' : 'Total Selección'}</p>
           <p className="text-white font-bold text-lg font-mono">${currentTotal.toLocaleString()}</p>
         </div>
       </div>
 
-      {/* LISTA DE TRANSACCIONES FILTRADAS */}
       {activeFilters.length > 0 && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-in slide-in-from-bottom-4">
           <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
             <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2">
-              <Filter size={14}/> Detalles: {activeFilters.join(' + ')}
+              <Filter size={14}/> Filtros: {activeFilters.join(' + ')}
             </h3>
             <button onClick={handleReset} className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1">
-              <X size={12}/> Limpiar filtro
+              <X size={12}/> Limpiar
             </button>
           </div>
           
@@ -338,8 +311,6 @@ export default function FinanceApp() {
   };
 
   const currentMessages = getFilteredMessages();
-  
-  // Procesar para lista jerárquica
   const hierarchyData = useMemo(() => processHierarchy(currentMessages), [currentMessages]);
 
   const totalIncome = currentMessages.filter(m => m.type === 'income').reduce((acc, m) => acc + (m.amount || 0), 0);
@@ -415,7 +386,7 @@ export default function FinanceApp() {
           </div>
         )}
 
-        {/* EXPLORE TAB (NUEVO MULTIDIMENSIONAL) */}
+        {/* EXPLORE TAB */}
         {activeTab === 'explore' && (
           <div className="p-4 space-y-6 pb-24">
              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-4">
@@ -423,16 +394,14 @@ export default function FinanceApp() {
                <p className="text-xs text-slate-500">Filtra tocando las categorías.</p>
              </div>
              
-             {/* Componente de Burbujas Multidimensionales */}
              <DynamicBubbleExplorer messages={currentMessages} />
           </div>
         )}
 
-        {/* STATS TAB (LISTA JERÁRQUICA) */}
+        {/* STATS TAB */}
         {activeTab === 'stats' && (
           <div className="p-4 space-y-6 pb-24">
             
-            {/* Filtros */}
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="text-xs font-bold text-slate-400 uppercase mb-2 flex gap-2"><CalendarIcon size={14}/> Fechas</h3>
               <div className="flex gap-2">
@@ -442,7 +411,6 @@ export default function FinanceApp() {
               </div>
             </div>
 
-            {/* Resumen */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-white p-4 rounded-2xl border border-slate-100">
                 <div className="text-green-600 text-xs font-bold mb-1 flex gap-1"><TrendingUp size={14}/> INGRESOS</div>
@@ -454,7 +422,6 @@ export default function FinanceApp() {
               </div>
             </div>
 
-            {/* LISTA JERÁRQUICA (Ordenada por Frecuencia/Importancia) */}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Filter size={18} /> Top Gastos</h3>
               <div className="space-y-1">
@@ -468,7 +435,6 @@ export default function FinanceApp() {
         )}
       </main>
 
-      {/* NAV */}
       <nav className="bg-white border-t border-slate-100 flex justify-around p-1 z-30 pb-safe">
         <button onClick={() => setActiveTab('chat')} className={`p-3 rounded-xl transition-all ${activeTab === 'chat' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><MessageSquare size={24} /></button>
         <button onClick={() => setActiveTab('explore')} className={`p-3 rounded-xl transition-all ${activeTab === 'explore' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}><Network size={24} /></button>
